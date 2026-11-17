@@ -31,6 +31,18 @@
 $ npm install
 ```
 
+### Database connection
+
+The application connects to the PostgreSQL database provisioned by Terraform.
+Copy `.env.example` to `.env` and set `DB_HOST`, `DB_NAME`, `DB_USER`, and
+`DB_PASSWORD` using the RDS endpoint and credentials. The connection uses a
+PostgreSQL pool with 20 connections by default, supports concurrent requests,
+and retries startup connections when the database is temporarily unavailable.
+
+The pool can be tuned with `DB_POOL_MAX`, `DB_POOL_MIN`,
+`DB_POOL_IDLE_TIMEOUT_MS`, and `DB_CONNECTION_TIMEOUT_MS`. Schema changes are
+managed by Terraform, so TypeORM synchronization is disabled.
+
 ## Compile and run the project
 
 ```bash
