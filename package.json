@@ -24,7 +24,7 @@
     "migration:revert": "tsx --env-file-if-exists=.env ./node_modules/typeorm/cli.js migration:revert -d src/database/data-source.ts",
     "migration:show": "tsx --env-file-if-exists=.env ./node_modules/typeorm/cli.js migration:show -d src/database/data-source.ts",
     "migration:run:prod": "node ./node_modules/typeorm/cli.js migration:run -d dist/database/data-source.js",
-    "job:recurring-transactions": "node dist/jobs/generate-recurring-transactions.job.js"
+    "job:daily": "node dist/jobs/daily.job.js"
   },
   "dependencies": {
     "@nestjs/common": "^12.0.1",
