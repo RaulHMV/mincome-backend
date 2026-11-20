@@ -3,7 +3,10 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { APP_FILTER, APP_PIPE } from '@nestjs/core';
 import { createObserveModule } from '@nestjs/observe';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { AccountsModule } from './accounts/accounts.module';
 import { AuthModule } from './auth/auth.module';
+import { CardsModule } from './cards/cards.module';
+import { CategoriesModule } from './categories/categories.module';
 import { ApiExceptionFilter } from './common/errors/api-exception.filter';
 import { validationExceptionFactory } from './common/validation/validation-exception.factory';
 import { AppConfigModule } from './config/app-config.module';
@@ -38,6 +41,9 @@ export const { ObserveModule, ObserveInstrument } = createObserveModule();
     HealthModule,
     PlansModule,
     UsersModule,
+    CategoriesModule,
+    AccountsModule,
+    CardsModule,
   ],
   providers: [
     {
