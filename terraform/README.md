@@ -1,15 +1,16 @@
 # Mincome database Terraform
 
-This directory defines the private PostgreSQL RDS service, the `mincome` database,
-and exactly three tables from the README's relational model:
+This directory defines the private PostgreSQL RDS service, the `mincome`
+database and its `pgcrypto` extension.
 
-- `planes`
-- `usuarios`
-- `categorias`
+The tables are not managed here. The `cyrilgdn/postgresql` provider has no
+`postgresql_table` resource (only a `postgresql_tables` data source), so the
+schema lives in the TypeORM migrations under `src/database/migrations` and is
+applied with `npm run migration:run` (see the root README).
 
 The PostgreSQL provider needs the RDS endpoint before it can create the logical
-database and tables. Apply the RDS service first, then apply the database schema
-with the endpoint returned by Terraform:
+database. Apply the RDS service first, then apply the database with the
+endpoint returned by Terraform:
 
 ```powershell
 terraform init

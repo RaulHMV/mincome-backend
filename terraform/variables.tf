@@ -31,7 +31,7 @@ variable "database_name" {
 }
 
 variable "database_host" {
-  description = "PostgreSQL endpoint used by the PostgreSQL provider to create the schema."
+  description = "PostgreSQL endpoint used by the PostgreSQL provider to create the database."
   type        = string
 }
 

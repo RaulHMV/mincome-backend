@@ -4,7 +4,7 @@ output "database_endpoint" {
 }
 
 output "database_name" {
-  description = "Logical PostgreSQL database containing the three Mincome tables."
+  description = "Logical PostgreSQL database that the TypeORM migrations populate."
   value       = postgresql_database.mincome.name
 }
 
