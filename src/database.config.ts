@@ -1,5 +1,13 @@
 import { ConfigService } from '@nestjs/config';
 import { TypeOrmModuleOptions } from '@nestjs/typeorm';
+import { join } from 'node:path';
+import { types } from 'pg';
+import type { DataSourceOptions } from 'typeorm';
+
+// `pg` convierte DATE en un Date de JavaScript con la zona horaria del
+// servidor, lo que puede mover el día. Las fechas se manejan como texto
+// 'YYYY-MM-DD' en toda la aplicación.
+types.setTypeParser(types.builtins.DATE, (value) => value);
 
 function getEnvironmentVariable(
   name: string,
@@ -43,9 +51,20 @@ function getPositiveIntegerEnvironmentVariable(
   return parsedValue;
 }
 
-export function createDatabaseConfig(
+// Con tsx (CLI de TypeORM en desarrollo) se cargan los .ts de src/; ya
+// compilado, los .js de dist/. No se usa '*.{ts,js}' porque dist/ también
+// tiene los .d.ts.
+const MIGRATIONS_GLOB = join(
+  __dirname,
+  'database',
+  'migrations',
+  __filename.endsWith('.ts') ? '*.ts' : '*.js',
+);
+
+/** Lo que comparten la aplicación y el CLI de TypeORM. */
+export function createDataSourceOptions(
   configService?: ConfigService,
-): TypeOrmModuleOptions {
+): DataSourceOptions {
   return {
     type: 'postgres',
     host: getRequiredEnvironmentVariable('DB_HOST', configService),
@@ -53,18 +72,9 @@ export function createDatabaseConfig(
     database: getRequiredEnvironmentVariable('DB_NAME', configService),
     username: getRequiredEnvironmentVariable('DB_USER', configService),
     password: getRequiredEnvironmentVariable('DB_PASSWORD', configService),
-    autoLoadEntities: true,
     synchronize: false,
-    retryAttempts: getPositiveIntegerEnvironmentVariable(
-      'DB_RETRY_ATTEMPTS',
-      5,
-      configService,
-    ),
-    retryDelay: getPositiveIntegerEnvironmentVariable(
-      'DB_RETRY_DELAY_MS',
-      3000,
-      configService,
-    ),
+    migrations: [MIGRATIONS_GLOB],
+    migrationsTableName: 'migraciones',
     extra: {
       max: getPositiveIntegerEnvironmentVariable(
         'DB_POOL_MAX',
@@ -87,5 +97,24 @@ export function createDatabaseConfig(
         configService,
       ),
     },
+  };
+}
+
+export function createDatabaseConfig(
+  configService?: ConfigService,
+): TypeOrmModuleOptions {
+  return {
+    ...createDataSourceOptions(configService),
+    autoLoadEntities: true,
+    retryAttempts: getPositiveIntegerEnvironmentVariable(
+      'DB_RETRY_ATTEMPTS',
+      5,
+      configService,
+    ),
+    retryDelay: getPositiveIntegerEnvironmentVariable(
+      'DB_RETRY_DELAY_MS',
+      3000,
+      configService,
+    ),
   };
 }

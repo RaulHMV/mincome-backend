@@ -1,5 +1,9 @@
 import { ConfigService } from '@nestjs/config';
-import { createDatabaseConfig } from './database.config';
+import { types } from 'pg';
+import {
+  createDatabaseConfig,
+  createDataSourceOptions,
+} from './database.config';
 
 describe('createDatabaseConfig', () => {
   const originalEnvironment = process.env;
@@ -91,6 +95,22 @@ describe('createDatabaseConfig', () => {
 
     expect(() => createDatabaseConfig()).toThrow(
       'DB_PORT must be a positive integer',
+    );
+  });
+
+  it('shares the migrations with the TypeORM CLI', () => {
+    const options = createDataSourceOptions();
+
+    expect(options.migrationsTableName).toBe('migraciones');
+    expect(options.migrations).toEqual([
+      expect.stringMatching(/database[\\/]migrations[\\/]\*\.ts$/),
+    ]);
+    expect(options).not.toHaveProperty('autoLoadEntities');
+  });
+
+  it('reads DATE columns as YYYY-MM-DD text', () => {
+    expect(types.getTypeParser(types.builtins.DATE)('2026-10-24')).toBe(
+      '2026-10-24',
     );
   });
 });
