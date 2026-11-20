@@ -42,11 +42,9 @@ export const isoMonthSchema = z
   .string()
   .refine(isIsoMonth, { error: 'Usa un mes válido con el formato AAAA-MM' });
 
-export const timeSchema = z
-  .string()
-  .regex(/^([01]\d|2[0-3]):[0-5]\d$/, {
-    error: 'Usa una hora válida con el formato HH:MM',
-  });
+export const timeSchema = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, {
+  error: 'Usa una hora válida con el formato HH:MM',
+});
 
 export const uuidSchema = z
   .string({ error: 'El identificador es obligatorio' })
@@ -63,11 +61,9 @@ export const hexColorSchema = z
   .string()
   .regex(/^#[0-9A-Fa-f]{6}$/, { error: 'Usa un color hexadecimal (#RRGGBB)' });
 
-export const timeZoneSchema = z
-  .string()
-  .refine(isValidTimeZone, {
-    error: 'Usa una zona horaria IANA, como America/Mexico_City',
-  });
+export const timeZoneSchema = z.string().refine(isValidTimeZone, {
+  error: 'Usa una zona horaria IANA, como America/Mexico_City',
+});
 
 export function requiredText(max: number) {
   return z
