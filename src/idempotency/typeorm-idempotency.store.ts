@@ -37,33 +37,21 @@ export class TypeOrmIdempotencyStore implements IdempotencyStore {
       const now = Date.now();
       // Inserta el candado o toma una fila expirada. De varias llamadas a la
       // vez, PostgreSQL deja escribir a una y revisa la condición de las demás
-      // contra la fila ganadora: esas no reciben fila de regreso.
-      const { raw } = await this.dataSource
-        .createQueryBuilder()
-        .insert()
-        .into(IdempotencyKey)
-        .values({
-          keyHash,
-          key,
-          fingerprint,
-          owner,
-          response: null,
-          expiresAt: now + lockTtl,
-        })
-        .orUpdate(
-          ['huella', 'propietario', 'respuesta', 'expira_en'],
-          ['llave_hash'],
-          {
-            overwriteCondition: {
-              where: 'llaves_idempotencia.expira_en <= :now',
-              parameters: { now },
-            },
-          },
-        )
-        .returning(['llave_hash'])
-        .updateEntity(false)
-        .execute();
-      if ((raw as unknown[]).length === 1) {
+      // contra la fila ganadora: esas no reciben fila de regreso. Va en SQL
+      // porque el query builder de TypeORM 1.x omite el RETURNING aquí.
+      const acquired: unknown[] = await this.dataSource.query(
+        `INSERT INTO llaves_idempotencia (llave_hash, llave, huella, propietario, respuesta, expira_en)
+         VALUES ($1, $2, $3, $4, NULL, $5)
+         ON CONFLICT (llave_hash) DO UPDATE
+           SET huella = EXCLUDED.huella,
+               propietario = EXCLUDED.propietario,
+               respuesta = NULL,
+               expira_en = EXCLUDED.expira_en
+           WHERE llaves_idempotencia.expira_en <= $6
+         RETURNING llave_hash`,
+        [keyHash, key, fingerprint, owner, now + lockTtl, now],
+      );
+      if (acquired.length === 1) {
         return { state: 'acquired' };
       }
 

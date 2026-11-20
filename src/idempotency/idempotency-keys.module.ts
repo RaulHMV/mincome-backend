@@ -6,9 +6,11 @@ import {
   OnModuleInit,
 } from '@nestjs/common';
 import { IdempotencyEvents, IdempotencyModule } from '@nestjs/idempotency';
+import { TypeOrmModule } from '@nestjs/typeorm';
 import type { Subscription } from 'rxjs';
 import type { AuthUser } from '../auth/auth-user';
 import { APP_CONFIG, type AppConfig } from '../config/app-config';
+import { IdempotencyKey } from './idempotency-key.entity';
 import { TypeOrmIdempotencyStore } from './typeorm-idempotency.store';
 
 /**
@@ -39,6 +41,7 @@ export class IdempotencyEventsLogger implements OnModuleInit, OnModuleDestroy {
 
 @Module({
   imports: [
+    TypeOrmModule.forFeature([IdempotencyKey]),
     IdempotencyModule.forRootAsync({
       inject: [APP_CONFIG],
       useFactory: (config: AppConfig) => ({
