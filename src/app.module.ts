@@ -5,6 +5,7 @@ import { createObserveModule } from '@nestjs/observe';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AccountsModule } from './accounts/accounts.module';
 import { AuthModule } from './auth/auth.module';
+import { BudgetsModule } from './budgets/budgets.module';
 import { CardsModule } from './cards/cards.module';
 import { CategoriesModule } from './categories/categories.module';
 import { ApiExceptionFilter } from './common/errors/api-exception.filter';
@@ -14,6 +15,7 @@ import { createDatabaseConfig } from './database.config';
 import { HealthModule } from './health/health.module';
 import { IdempotencyKeysModule } from './idempotency/idempotency-keys.module';
 import { PlansModule } from './plans/plans.module';
+import { TransactionsModule } from './transactions/transactions.module';
 import { UsersModule } from './users/users.module';
 
 export const { ObserveModule, ObserveInstrument } = createObserveModule();
@@ -44,6 +46,8 @@ export const { ObserveModule, ObserveInstrument } = createObserveModule();
     CategoriesModule,
     AccountsModule,
     CardsModule,
+    BudgetsModule,
+    TransactionsModule,
   ],
   providers: [
     {
