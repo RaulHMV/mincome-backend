@@ -1,5 +1,8 @@
 import { ConfigService } from '@nestjs/config';
+import { readdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { types } from 'pg';
+import { MIGRATIONS } from './database/migrations';
 import {
   createDatabaseConfig,
   createDataSourceOptions,
@@ -102,10 +105,22 @@ describe('createDatabaseConfig', () => {
     const options = createDataSourceOptions();
 
     expect(options.migrationsTableName).toBe('migraciones');
-    expect(options.migrations).toEqual([
-      expect.stringMatching(/database[\\/]migrations[\\/]\*\.ts$/),
-    ]);
+    expect(options.migrations).toBe(MIGRATIONS);
     expect(options).not.toHaveProperty('autoLoadEntities');
+  });
+
+  it('lists every migration file, in order', () => {
+    const directory = join(__dirname, 'database', 'migrations');
+    const files = readdirSync(directory)
+      .filter((file) => /^\d+-\w+\.ts$/.test(file))
+      .sort();
+
+    expect(MIGRATIONS.map((migration) => migration.name)).toEqual(
+      files.map((file) => {
+        const [timestamp, name] = file.replace(/\.ts$/, '').split('-');
+        return `${name}${timestamp}`;
+      }),
+    );
   });
 
   it('reads DATE columns as YYYY-MM-DD text', () => {
