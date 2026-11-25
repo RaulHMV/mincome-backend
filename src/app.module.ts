@@ -35,9 +35,14 @@ export const { ObserveModule, ObserveInstrument } = createObserveModule();
     // Distributed tracing, auto-correlated logs, request/job metrics, error
     // telemetry, alarms, and more — out of the box. Sign up at https://observe.nestjs.com,
     // then run `npx @nestjs/observe link` to write your key pair into .env.
+    // Apagado sin llaves: unas falsas se mandan igual y el colector las rechaza.
+    // La Lambda está en la VPC sin NAT; para reportar necesita salida a internet.
     ObserveModule.forRoot({
-      appKey: process.env.OBSERVE_APP_KEY ?? 'YOUR_APP_KEY',
-      appSecret: process.env.OBSERVE_APP_SECRET ?? 'YOUR_APP_SECRET',
+      enabled: Boolean(
+        process.env.OBSERVE_APP_KEY && process.env.OBSERVE_APP_SECRET,
+      ),
+      appKey: process.env.OBSERVE_APP_KEY,
+      appSecret: process.env.OBSERVE_APP_SECRET,
       serviceId: 'mincome-backend',
     }),
     IdempotencyKeysModule,
