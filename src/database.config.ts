@@ -1,4 +1,5 @@
 import { ConfigService } from '@nestjs/config';
+import { readFileSync } from 'node:fs';
 import { TypeOrmModuleOptions } from '@nestjs/typeorm';
 import { types } from 'pg';
 import type { DataSourceOptions } from 'typeorm';
@@ -29,10 +30,10 @@ function getRequiredEnvironmentVariable(
   return value;
 }
 
-function getPositiveIntegerEnvironmentVariable(
+function getIntegerEnvironmentVariable(
   name: string,
   defaultValue: number,
-  configService?: ConfigService,
+  { min, configService }: { min: 0 | 1; configService?: ConfigService },
 ): number {
   const value = getEnvironmentVariable(name, configService);
 
@@ -42,19 +43,81 @@ function getPositiveIntegerEnvironmentVariable(
 
   const parsedValue = Number(value);
 
-  if (!Number.isInteger(parsedValue) || parsedValue <= 0) {
+  if (!Number.isInteger(parsedValue) || parsedValue < min) {
     throw new Error(
-      `Database environment variable ${name} must be a positive integer`,
+      `Database environment variable ${name} must be ${min === 0 ? 'a non-negative' : 'a positive'} integer`,
     );
   }
 
   return parsedValue;
 }
 
-/** Lo que comparten la aplicación y el CLI de TypeORM. */
+function getPositiveIntegerEnvironmentVariable(
+  name: string,
+  defaultValue: number,
+  configService?: ConfigService,
+): number {
+  return getIntegerEnvironmentVariable(name, defaultValue, {
+    min: 1,
+    configService,
+  });
+}
+
+function getBooleanEnvironmentVariable(
+  name: string,
+  defaultValue: boolean,
+  configService?: ConfigService,
+): boolean {
+  const value = getEnvironmentVariable(name, configService)?.trim();
+  if (value === undefined || value === '') {
+    return defaultValue;
+  }
+  if (value !== 'true' && value !== 'false') {
+    throw new Error(
+      `Database environment variable ${name} must be true or false`,
+    );
+  }
+  return value === 'true';
+}
+
+function runsOnLambda(configService?: ConfigService): boolean {
+  return Boolean(
+    getEnvironmentVariable('AWS_LAMBDA_FUNCTION_NAME', configService),
+  );
+}
+
+/**
+ * TLS verificando el certificado. RDS Proxy usa certificados de ACM, que
+ * Node ya reconoce; para conectarse directo a RDS hace falta el bundle de
+ * AWS en DB_SSL_CA_FILE.
+ */
+function createSslOptions(configService?: ConfigService) {
+  if (
+    !getBooleanEnvironmentVariable(
+      'DB_SSL',
+      runsOnLambda(configService),
+      configService,
+    )
+  ) {
+    return false;
+  }
+  const caFile = getEnvironmentVariable('DB_SSL_CA_FILE', configService);
+  return {
+    rejectUnauthorized: true,
+    ...(caFile ? { ca: readFileSync(caFile, 'utf8') } : {}),
+  };
+}
+
+/**
+ * Lo que comparten la aplicación y el CLI de TypeORM.
+ *
+ * En Lambda cada instancia atiende una petición a la vez y RDS Proxy reparte
+ * las conexiones, así que el pool por instancia es chico y sin mínimo.
+ */
 export function createDataSourceOptions(
   configService?: ConfigService,
 ): DataSourceOptions {
+  const onLambda = runsOnLambda(configService);
   return {
     type: 'postgres',
     host: getRequiredEnvironmentVariable('DB_HOST', configService),
@@ -65,17 +128,17 @@ export function createDataSourceOptions(
     synchronize: false,
     migrations: MIGRATIONS,
     migrationsTableName: 'migraciones',
+    ssl: createSslOptions(configService),
     extra: {
       max: getPositiveIntegerEnvironmentVariable(
         'DB_POOL_MAX',
-        20,
+        onLambda ? 2 : 20,
         configService,
       ),
-      min: getPositiveIntegerEnvironmentVariable(
-        'DB_POOL_MIN',
-        2,
+      min: getIntegerEnvironmentVariable('DB_POOL_MIN', onLambda ? 0 : 2, {
+        min: 0,
         configService,
-      ),
+      }),
       idleTimeoutMillis: getPositiveIntegerEnvironmentVariable(
         'DB_POOL_IDLE_TIMEOUT_MS',
         30000,
@@ -93,17 +156,19 @@ export function createDataSourceOptions(
 export function createDatabaseConfig(
   configService?: ConfigService,
 ): TypeOrmModuleOptions {
+  // En Lambda, API Gateway corta a los 30 s: más vale fallar rápido.
+  const onLambda = runsOnLambda(configService);
   return {
     ...createDataSourceOptions(configService),
     autoLoadEntities: true,
-    retryAttempts: getPositiveIntegerEnvironmentVariable(
+    retryAttempts: getIntegerEnvironmentVariable(
       'DB_RETRY_ATTEMPTS',
-      5,
-      configService,
+      onLambda ? 1 : 5,
+      { min: 0, configService },
     ),
     retryDelay: getPositiveIntegerEnvironmentVariable(
       'DB_RETRY_DELAY_MS',
-      3000,
+      onLambda ? 1000 : 3000,
       configService,
     ),
   };

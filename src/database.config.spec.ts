@@ -44,6 +44,31 @@ describe('createDatabaseConfig', () => {
     });
   });
 
+  it('sizes the pool for Lambda behind RDS Proxy and requires TLS', () => {
+    process.env.AWS_LAMBDA_FUNCTION_NAME = 'mincome-backend';
+
+    expect(createDatabaseConfig()).toMatchObject({
+      retryAttempts: 1,
+      retryDelay: 1000,
+      ssl: { rejectUnauthorized: true },
+      extra: { max: 2, min: 0 },
+    });
+  });
+
+  it('connects without TLS locally unless DB_SSL is true', () => {
+    expect(createDataSourceOptions()).toMatchObject({ ssl: false });
+
+    process.env.DB_SSL = 'true';
+    expect(createDataSourceOptions()).toMatchObject({
+      ssl: { rejectUnauthorized: true },
+    });
+
+    process.env.DB_SSL = 'yes';
+    expect(() => createDataSourceOptions()).toThrow(
+      'DB_SSL must be true or false',
+    );
+  });
+
   it('rejects an invalid pool size', () => {
     process.env.DB_POOL_MAX = '0';
 
