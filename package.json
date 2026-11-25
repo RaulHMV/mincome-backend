@@ -26,7 +26,7 @@
     "migration:run:prod": "node ./node_modules/typeorm/cli.js migration:run -d dist/database/data-source.js",
     "job:daily": "node dist/jobs/daily.job.js",
     "build:lambda": "nest build && node scripts/bundle-lambda.mjs",
-    "test:lambda-bundle": "npm run build:lambda && LAMBDA_BUNDLE=dist-lambda/lambda.js node --experimental-vm-modules ./node_modules/jest/bin/jest.js --config ./test/jest-e2e.json --runInBand lambda"
+    "test:lambda-bundle": "npm run build:lambda && node scripts/test-lambda-bundle.mjs"
   },
   "dependencies": {
     "@aws-sdk/rds-signer": "^3.1165.0",
