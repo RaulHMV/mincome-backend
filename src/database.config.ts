@@ -1,3 +1,4 @@
+import { Signer } from '@aws-sdk/rds-signer';
 import { ConfigService } from '@nestjs/config';
 import { readFileSync } from 'node:fs';
 import { TypeOrmModuleOptions } from '@nestjs/typeorm';
@@ -109,6 +110,33 @@ function createSslOptions(configService?: ConfigService) {
 }
 
 /**
+ * Con DB_IAM_AUTH=true (en AWS) la contraseña es un token IAM de RDS Proxy que
+ * dura 15 minutos y se genera por cada conexión nueva, sin llamar a la red:
+ * la Lambda no guarda ninguna contraseña de la base, solo su rol puede
+ * conectarse (rds-db:connect). Si no, DB_PASSWORD.
+ */
+function createPasswordOption(
+  connection: { host: string; port: number; username: string; ssl: unknown },
+  configService?: ConfigService,
+): string | (() => Promise<string>) {
+  if (!getBooleanEnvironmentVariable('DB_IAM_AUTH', false, configService)) {
+    return getRequiredEnvironmentVariable('DB_PASSWORD', configService);
+  }
+  if (connection.ssl === false) {
+    throw new Error(
+      'DB_IAM_AUTH needs DB_SSL=true: RDS only accepts IAM tokens over TLS',
+    );
+  }
+  const signer = new Signer({
+    hostname: connection.host,
+    port: connection.port,
+    username: connection.username,
+    region: getRequiredEnvironmentVariable('AWS_REGION', configService),
+  });
+  return () => signer.getAuthToken();
+}
+
+/**
  * Lo que comparten la aplicación y el CLI de TypeORM.
  *
  * En Lambda cada instancia atiende una petición a la vez y RDS Proxy reparte
@@ -118,17 +146,20 @@ export function createDataSourceOptions(
   configService?: ConfigService,
 ): DataSourceOptions {
   const onLambda = runsOnLambda(configService);
-  return {
-    type: 'postgres',
+  const connection = {
     host: getRequiredEnvironmentVariable('DB_HOST', configService),
     port: getPositiveIntegerEnvironmentVariable('DB_PORT', 5432, configService),
-    database: getRequiredEnvironmentVariable('DB_NAME', configService),
     username: getRequiredEnvironmentVariable('DB_USER', configService),
-    password: getRequiredEnvironmentVariable('DB_PASSWORD', configService),
+    ssl: createSslOptions(configService),
+  };
+  return {
+    type: 'postgres',
+    ...connection,
+    database: getRequiredEnvironmentVariable('DB_NAME', configService),
+    password: createPasswordOption(connection, configService),
     synchronize: false,
     migrations: MIGRATIONS,
     migrationsTableName: 'migraciones',
-    ssl: createSslOptions(configService),
     extra: {
       max: getPositiveIntegerEnvironmentVariable(
         'DB_POOL_MAX',

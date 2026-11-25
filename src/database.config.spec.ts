@@ -69,6 +69,31 @@ describe('createDatabaseConfig', () => {
     );
   });
 
+  it('signs an RDS Proxy IAM token instead of reading DB_PASSWORD', async () => {
+    delete process.env.DB_PASSWORD;
+    Object.assign(process.env, {
+      DB_IAM_AUTH: 'true',
+      DB_SSL: 'true',
+      AWS_REGION: 'us-east-1',
+      // Credenciales falsas: el token se firma localmente, sin red.
+      AWS_ACCESS_KEY_ID: 'AKIAIOSFODNN7EXAMPLE',
+      AWS_SECRET_ACCESS_KEY: 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY',
+    });
+
+    const { password } = createDataSourceOptions() as { password: unknown };
+    expect(password).toBeInstanceOf(Function);
+    const token = await (password as () => Promise<string>)();
+    expect(token).toMatch(
+      /^database\.example\.com:5432\/\?Action=connect&DBUser=mincome_app&/,
+    );
+    expect(token).toContain('X-Amz-Signature=');
+
+    process.env.DB_SSL = 'false';
+    expect(() => createDataSourceOptions()).toThrow(
+      'DB_IAM_AUTH needs DB_SSL=true',
+    );
+  });
+
   it('rejects an invalid pool size', () => {
     process.env.DB_POOL_MAX = '0';
 

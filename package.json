@@ -29,6 +29,7 @@
     "test:lambda-bundle": "npm run build:lambda && LAMBDA_BUNDLE=dist-lambda/lambda.js node --experimental-vm-modules ./node_modules/jest/bin/jest.js --config ./test/jest-e2e.json --runInBand lambda"
   },
   "dependencies": {
+    "@aws-sdk/rds-signer": "^3.1165.0",
     "@codegenie/serverless-express": "^5.0.0",
     "@nestjs/common": "^12.0.1",
     "@nestjs/config": "^12.1.1",
