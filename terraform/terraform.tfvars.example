@@ -1,0 +1,21 @@
+# Copia este archivo a terraform.tfvars (Git lo ignora) y llena los valores.
+# Las contraseñas también pueden ir como TF_VAR_database_admin_password.
+
+aws_region         = "us-east-1"
+vpc_id             = ""
+private_subnet_ids = ["", ""]
+
+# Redes de administración (VPN o donde corre Terraform); la Lambda entra por
+# el RDS Proxy, no por aquí.
+database_allowed_cidr_blocks = []
+
+# Endpoint que regresa el primer apply (terraform output -raw database_endpoint).
+database_host = ""
+
+database_admin_username = ""
+database_admin_password = ""
+
+# Ambientes desechables: false y true. Producción: déjalos como están.
+# database_deletion_protection = true
+# database_skip_final_snapshot = false
+# database_multi_az            = true
