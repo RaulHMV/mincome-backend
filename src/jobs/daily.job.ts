@@ -17,7 +17,8 @@ const logger = new Logger('DailyJob');
 
 /**
  * El proceso diario (requerimientos-backend.md §3.7): genera las recurrentes
- * que ya tocaban y limpia las llaves de idempotencia expiradas.
+ * que ya tocaban y limpia las llaves de idempotencia expiradas. En AWS lo
+ * dispara EventBridge Scheduler con `{"job": "daily"}` (src/lambda.ts).
  */
 export async function runDailyJob(
   app: INestApplicationContext,
@@ -37,16 +38,6 @@ export async function runDailyJob(
   const summary = { recurringTransactions, prunedIdempotencyKeys };
   logger.log(JSON.stringify(summary));
   return summary;
-}
-
-let context: Promise<INestApplicationContext> | undefined;
-
-/** Para la Lambda que invoca EventBridge Scheduler una vez al día; el contexto se reutiliza entre invocaciones. */
-export async function handler(): Promise<DailyJobSummary> {
-  context ??= NestFactory.createApplicationContext(AppModule, {
-    logger: ['error', 'warn', 'log'],
-  });
-  return runDailyJob(await context);
 }
 
 // `npm run job:daily` después de `npm run build`.
