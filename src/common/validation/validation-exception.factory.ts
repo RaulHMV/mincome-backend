@@ -1,9 +1,11 @@
 import type { StandardSchemaValidationPipeOptions } from '@nestjs/common';
 import { z } from 'zod';
+// Solo el español: `z.locales` trae todos los idiomas al paquete de la Lambda.
+import es from 'zod/v4/locales/es.cjs';
 import { ValidationError } from '../errors/api-error';
 
 // Mensajes de Zod en español para las reglas que no traen uno propio.
-z.config(z.locales.es());
+z.config(es());
 
 type Issue = Parameters<
   NonNullable<StandardSchemaValidationPipeOptions['exceptionFactory']>
