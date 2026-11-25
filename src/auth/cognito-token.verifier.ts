@@ -1,6 +1,7 @@
 import { CognitoJwtVerifier } from 'aws-jwt-verify';
 import type { AppConfig } from '../config/app-config';
 import type { TokenIdentity } from './auth-user';
+import { identityFromClaims, type Claims } from './cognito-claims';
 
 export const TOKEN_VERIFIER = Symbol('TOKEN_VERIFIER');
 
@@ -19,21 +20,10 @@ function createJwtVerifier({ userPoolId, clientIds }: AppConfig['cognito']) {
   });
 }
 
-function stringClaim(
-  payload: Record<string, unknown>,
-  name: string,
-): string | null {
-  const value = payload[name];
-  return typeof value === 'string' && value.trim().length > 0
-    ? value.trim()
-    : null;
-}
-
 /**
- * Verifica el JWT de Cognito: firma contra las llaves públicas del user pool,
- * iss, expiración, token_use y el app client (aud o client_id). API Gateway
- * también lo valida; aquí se repite para que la API no dependa de que el
- * autorizador esté bien configurado.
+ * Modo `jwt` (desarrollo local y pruebas): verifica el JWT de Cognito con las
+ * llaves públicas del user pool, iss, expiración, token_use y el app client
+ * (aud o client_id). En Lambda lo hace API Gateway; ver AuthGuard.
  */
 export class CognitoTokenVerifier implements TokenVerifier {
   readonly jwtVerifier: ReturnType<typeof createJwtVerifier>;
@@ -43,17 +33,7 @@ export class CognitoTokenVerifier implements TokenVerifier {
   }
 
   async verify(token: string): Promise<TokenIdentity> {
-    const payload = (await this.jwtVerifier.verify(token)) as Record<
-      string,
-      unknown
-    >;
-    const groups = payload['cognito:groups'];
-    return {
-      sub: String(payload.sub),
-      email: stringClaim(payload, 'email'),
-      name: stringClaim(payload, 'name'),
-      groups: Array.isArray(groups) ? groups.map(String) : [],
-      termsVersion: stringClaim(payload, 'custom:terminos_version'),
-    };
+    const payload = await this.jwtVerifier.verify(token);
+    return identityFromClaims(payload as Claims);
   }
 }

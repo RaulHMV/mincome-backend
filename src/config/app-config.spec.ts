@@ -12,6 +12,7 @@ const VALID = {
 describe('loadAppConfig', () => {
   it('lee Cognito y usa los orígenes de desarrollo por defecto', () => {
     expect(loadAppConfig(readerOf(VALID))).toEqual({
+      authMode: 'jwt',
       cognito: {
         userPoolId: 'us-east-1_AbCdEfGhI',
         clientIds: ['web-client', 'mobile-client'],
@@ -22,8 +23,33 @@ describe('loadAppConfig', () => {
         'capacitor://localhost',
       ],
       internalApiKey: null,
+      internalCallerRoleArns: [],
       idempotencyEncryptionKeys: [],
     });
+  });
+
+  it('en Lambda confía por omisión en lo que validó API Gateway', () => {
+    const inLambda = { ...VALID, AWS_LAMBDA_FUNCTION_NAME: 'mincome-backend' };
+    expect(loadAppConfig(readerOf(inLambda)).authMode).toBe('api-gateway');
+    expect(
+      loadAppConfig(readerOf({ ...inLambda, AUTH_MODE: 'jwt' })).authMode,
+    ).toBe('jwt');
+    expect(() =>
+      loadAppConfig(readerOf({ ...VALID, AUTH_MODE: 'ninguno' })),
+    ).toThrow('AUTH_MODE must be api-gateway or jwt');
+  });
+
+  it('lee los roles IAM que pueden llamar /internal/*', () => {
+    const arn = 'arn:aws:iam::123456789012:role/mincome-ai-wrapper';
+    expect(
+      loadAppConfig(readerOf({ ...VALID, INTERNAL_CALLER_ROLE_ARNS: arn }))
+        .internalCallerRoleArns,
+    ).toEqual([arn]);
+    expect(() =>
+      loadAppConfig(
+        readerOf({ ...VALID, INTERNAL_CALLER_ROLE_ARNS: 'mincome-ai-wrapper' }),
+      ),
+    ).toThrow('INTERNAL_CALLER_ROLE_ARNS');
   });
 
   it('rechaza un user pool mal escrito', () => {
