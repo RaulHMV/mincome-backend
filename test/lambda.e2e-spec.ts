@@ -1,15 +1,39 @@
 import type { APIGatewayProxyStructuredResultV2, Context } from 'aws-lambda';
 import { randomUUID } from 'node:crypto';
+import { cpSync, mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { basename, dirname, join, resolve } from 'node:path';
 import { DataSource } from 'typeorm';
 import { createDataSourceOptions } from '../src/database.config';
 import { MIGRATIONS } from '../src/database/migrations';
-import { closeApp, handler } from '../src/lambda';
+import type * as LambdaModule from '../src/lambda';
 import { expense } from './support/fixtures';
 import { TEST_ISSUER } from './support/tokens';
 
 // La Lambda tal como la invoca AWS: eventos de API Gateway HTTP API (payload
 // 2.0) con los claims que ya validó el autorizador JWT, el trigger de Cognito
 // y las invocaciones directas de EventBridge Scheduler y del despliegue.
+//
+// Con LAMBDA_BUNDLE=dist-lambda/lambda.js prueba el paquete que se sube a AWS
+// (npm run test:lambda-bundle) en vez del código fuente.
+
+/**
+ * El paquete se copia a una carpeta temporal sin node_modules arriba, como
+ * /var/task en Lambda: así un `require` que el paquete no trae falla aquí
+ * igual que fallaría en AWS, en vez de encontrar el node_modules del repo.
+ */
+function loadLambda(): typeof LambdaModule {
+  const bundle = process.env.LAMBDA_BUNDLE;
+  if (!bundle) {
+    return jest.requireActual('../src/lambda');
+  }
+  const source = resolve(dirname(bundle));
+  const target = mkdtempSync(join(tmpdir(), 'mincome-lambda-'));
+  cpSync(source, target, { recursive: true });
+  return jest.requireActual(join(target, basename(bundle)));
+}
+
+const { closeApp, handler } = loadLambda();
 
 const CONTEXT = { awsRequestId: 'test-request' } as Context;
 const USER_POOL_ID = process.env.COGNITO_USER_POOL_ID as string;

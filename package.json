@@ -24,7 +24,9 @@
     "migration:revert": "tsx --env-file-if-exists=.env ./node_modules/typeorm/cli.js migration:revert -d src/database/data-source.ts",
     "migration:show": "tsx --env-file-if-exists=.env ./node_modules/typeorm/cli.js migration:show -d src/database/data-source.ts",
     "migration:run:prod": "node ./node_modules/typeorm/cli.js migration:run -d dist/database/data-source.js",
-    "job:daily": "node dist/jobs/daily.job.js"
+    "job:daily": "node dist/jobs/daily.job.js",
+    "build:lambda": "nest build && node scripts/bundle-lambda.mjs",
+    "test:lambda-bundle": "npm run build:lambda && LAMBDA_BUNDLE=dist-lambda/lambda.js node --experimental-vm-modules ./node_modules/jest/bin/jest.js --config ./test/jest-e2e.json --runInBand lambda"
   },
   "dependencies": {
     "@codegenie/serverless-express": "^5.0.0",
@@ -53,6 +55,7 @@
     "@types/node": "^24.0.0",
     "@types/pg": "^8.23.1",
     "@types/supertest": "^7.0.0",
+    "esbuild": "^0.28.2",
     "jest": "^30.0.0",
     "oxlint": "^1.58.0",
     "oxlint-tsgolint": "^7.0.2001",
