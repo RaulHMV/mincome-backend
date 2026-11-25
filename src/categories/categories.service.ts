@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import type { EntityManager } from 'typeorm';
 import {
   CATEGORY_APPLIES_TO_DB,
   CategoryAppliesTo,
@@ -109,7 +110,9 @@ export class CategoriesService {
    * Para movimientos y presupuestos nuevos: del sistema o del usuario,
    * activa y compatible con el flujo (requerimientos-backend.md §4).
    */
+  /** Con el manager de la transacción en curso, para no pedir otra conexión al pool. */
   async requireUsable(
+    manager: EntityManager,
     userId: string,
     categoryId: number,
     type: FlowType,
@@ -118,6 +121,7 @@ export class CategoriesService {
     const category = await this.categoriesRepository.findAccessible(
       userId,
       categoryId,
+      manager,
     );
     if (!category) {
       throw ValidationError.forField(field, 'La categoría no existe');

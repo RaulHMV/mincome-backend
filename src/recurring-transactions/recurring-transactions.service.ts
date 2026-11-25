@@ -99,6 +99,7 @@ export class RecurringTransactionsService {
   ): Promise<CreateRecurringTransactionResult> {
     assertSubtypeMatches(dto.type, dto.subtype, { recurring: true });
     await this.categoriesService.requireUsable(
+      this.dataSource.manager,
       user.id,
       dto.categoryId,
       dto.type,
@@ -212,6 +213,7 @@ export class RecurringTransactionsService {
       assertSubtypeMatches(type, subtype, { recurring: true });
       if (dto.categoryId !== undefined) {
         await this.categoriesService.requireUsable(
+          manager,
           user.id,
           dto.categoryId,
           type,

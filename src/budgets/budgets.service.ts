@@ -180,7 +180,12 @@ export class BudgetsService {
           continue;
         }
 
-        await this.requireExpenseCategory(user.id, change.categoryId, index);
+        await this.requireExpenseCategory(
+          manager,
+          user.id,
+          change.categoryId,
+          index,
+        );
         const limit =
           change.limit !== undefined
             ? centsToNumeric(toCents(change.limit))
@@ -208,12 +213,14 @@ export class BudgetsService {
 
   /** Presupuestos solo sobre categorías de gasto o "ambos" (requerimientos-backend.md §4). */
   private async requireExpenseCategory(
+    manager: EntityManager,
     userId: string,
     categoryId: number,
     index: number,
   ) {
     try {
       await this.categoriesService.requireUsable(
+        manager,
         userId,
         categoryId,
         FlowType.EXPENSE,

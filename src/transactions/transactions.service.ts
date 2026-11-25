@@ -193,6 +193,7 @@ export class TransactionsService {
       );
     }
     await this.categoriesService.requireUsable(
+      manager,
       user.id,
       draft.categoryId,
       draft.type,
@@ -289,6 +290,7 @@ export class TransactionsService {
     alertLevel: AlertLevel,
   ): Promise<TransactionWriteResult> {
     const category = await this.categoriesService.requireUsable(
+      manager,
       user.id,
       draft.categoryId,
       draft.type,
