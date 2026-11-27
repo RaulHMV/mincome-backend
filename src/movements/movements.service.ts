@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import type { AuthUser } from '../auth/auth-user';
 import { ACCOUNT_TYPE_DB } from '../common/enums';
 import { fromCents } from '../common/money';
-import type { SearchMovementsQuery } from './dto/movement.dto';
+import { MovementKind, type SearchMovementsQuery } from './dto/movement.dto';
 import {
   toMovementDto,
   type MovementDto,
@@ -54,6 +54,26 @@ export class MovementsService {
         pocketWithdrawals: fromCents(totals.pocketWithdrawalsCents),
         balance: fromCents(totals.incomeCents - totals.expenseCents),
       },
+    };
+  }
+
+  /**
+   * Ingresos y gastos entre dos fechas, inclusive: Gasto e Ingreso del Mes
+   * (requerimientos-backend.md §3.2). Traspasos y apartados no cuentan.
+   */
+  async flowTotals(
+    userId: string,
+    from: string,
+    to: string,
+  ): Promise<{ incomeCents: number; expenseCents: number }> {
+    const totals = await this.movementsRepository.totals(userId, {
+      kinds: [MovementKind.INCOME, MovementKind.EXPENSE],
+      from,
+      to,
+    });
+    return {
+      incomeCents: totals.incomeCents,
+      expenseCents: totals.expenseCents,
     };
   }
 
