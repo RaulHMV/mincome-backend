@@ -11,7 +11,11 @@ import { QueryFailedError } from 'typeorm';
 import type { ApiErrorBody, ApiErrorCode } from './api-error';
 
 const MESSAGES_BY_STATUS: Partial<Record<number, [ApiErrorCode, string]>> = {
-  [HttpStatus.BAD_REQUEST]: ['validation_error', 'La petición no es válida.'],
+  // Sale como 422 (ver toResponse): el contrato usa 422 para un body inválido.
+  [HttpStatus.BAD_REQUEST]: [
+    'validation_error',
+    'El cuerpo de la petición no es un JSON válido.',
+  ],
   [HttpStatus.UNAUTHORIZED]: [
     'unauthenticated',
     'Tu sesión no es válida o ya expiró. Inicia sesión de nuevo.',
@@ -131,7 +135,14 @@ export class ApiExceptionFilter implements ExceptionFilter {
       if (status >= 500) {
         this.logger.error(exception.message, exception.stack);
       }
-      return [status, bodyOf(code, message)];
+      // 400 viene de Express o de un pipe de Nest, casi siempre un JSON mal
+      // formado: para el front es un body inválido, igual que con Zod.
+      return [
+        status === HttpStatus.BAD_REQUEST
+          ? HttpStatus.UNPROCESSABLE_ENTITY
+          : status,
+        bodyOf(code, message),
+      ];
     }
 
     if (exception instanceof QueryFailedError) {
