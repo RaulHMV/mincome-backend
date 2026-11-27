@@ -1,138 +1,126 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# Mincome · Backend
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+API de Mincome en NestJS 12 y PostgreSQL 16. Implementa el contrato de la API y las reglas de negocio que están en `docs/` de **mincome-frontend**: `contrato-api.md`, `requerimientos-backend.md` y `requerimientos-ia.md`. En AWS corre en una Lambda detrás de API Gateway; local, como servidor HTTP normal.
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+## Requisitos
 
-## Description
+- **Node.js 24** (`.nvmrc`): Jest 30 y el paquete de Lambda lo necesitan. Con nvm: `nvm use`.
+- **PostgreSQL 16** con las extensiones `pgcrypto`, `pg_trgm` y `unaccent` (vienen en la imagen oficial `postgres:16`).
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
-
-## Project setup
+## Puesta en marcha
 
 ```bash
-$ npm install
+nvm use
+npm ci
+cp .env.example .env        # llena DB_PASSWORD, COGNITO_USER_POOL_ID y COGNITO_CLIENT_IDS
+createdb mincome            # o la base que pongas en DB_NAME
+npm run migration:run
+npm run start:dev           # http://localhost:3000/api/v1/health
 ```
 
-### Database connection
+Todas las rutas van bajo `/api/v1` y piden `Authorization: Bearer <token de Cognito>`, salvo `GET /health`. Para pruebas manuales, los tokens salen del user pool de desarrollo.
 
-The application connects to the PostgreSQL database provisioned by Terraform.
-Copy `.env.example` to `.env` and set `DB_HOST`, `DB_NAME`, `DB_USER`, and
-`DB_PASSWORD` using the RDS endpoint and credentials. The connection uses a
-PostgreSQL pool with 20 connections by default, supports concurrent requests,
-and retries startup connections when the database is temporarily unavailable.
+## Variables de entorno
 
-The pool can be tuned with `DB_POOL_MAX`, `DB_POOL_MIN`,
-`DB_POOL_IDLE_TIMEOUT_MS`, and `DB_CONNECTION_TIMEOUT_MS`. Schema changes are
-managed by Terraform, so TypeORM synchronization is disabled.
+Las de la base, Cognito, CORS, rutas internas e idempotencia están comentadas en [`.env.example`](.env.example). En Lambda, la plantilla de SAM las pone (ver [docs/despliegue.md](docs/despliegue.md)). La app valida su configuración al arrancar y no levanta si falta algo obligatorio.
 
-## Compile and run the project
+## Migraciones
+
+El esquema vive en [`src/database/migrations`](src/database/migrations), en migraciones **escritas a mano**. No se usa `synchronize` ni `migration:generate`, para que los nombres de restricciones e índices sigan la guía de contribución (`pk_`, `fk_`, `uq_`, `ck_`, `idx_`).
 
 ```bash
-# development
-$ npm run start
-
-# watch mode
-$ npm run start:dev
-
-# production mode
-$ npm run start:prod
+npm run migration:create -- src/database/migrations/AgregaAlgo   # crea el archivo vacío
+npm run migration:run                         # aplica las pendientes (usa .env)
+npm run migration:revert                      # revierte la última
+npm run migration:show                        # cuáles faltan
 ```
 
-## Run tests
+- Cada migración nueva se agrega a `MIGRATIONS` en [`src/database/migrations/index.ts`](src/database/migrations/index.ts). Una prueba revisa que estén todas y en orden.
+- Prueba `up` y `down` antes de subirla, y que sea compatible con el código anterior: en AWS la versión vieja sigue atendiendo mientras corre la migración.
+- En AWS las corre el despliegue, no una persona (ver [docs/despliegue.md](docs/despliegue.md)).
+
+## Pruebas
+
+| Comando | Qué corre |
+|---|---|
+| `npm test` | Unitarias: toda la aritmética (saldos, presupuestos, tarjetas, recurrencia, calendario, alertas). |
+| `npm run test:e2e` | e2e contra PostgreSQL de verdad, por endpoint, más [`failure-scenarios`](test/failure-scenarios.e2e-spec.ts): carreras, fallas a media transacción, failover, tokens falsificados y entradas hostiles. |
+| `npm run test:lambda-bundle` | Las e2e de la Lambda contra el paquete que se sube a AWS. |
+
+Las e2e usan `TEST_DB_HOST`, `TEST_DB_PORT`, `TEST_DB_NAME` (`mincome_test` por omisión), `TEST_DB_USER` y `TEST_DB_PASSWORD` del entorno. **Borran y vuelven a crear el esquema en cada archivo**: nunca las apuntes a una base con datos que quieras conservar.
 
 ```bash
-# unit tests
-$ npm run test
-
-# e2e tests
-$ npm run test:e2e
-
-# test coverage
-$ npm run test:cov
+TEST_DB_PORT=5432 TEST_DB_PASSWORD=postgres npm run test:e2e
 ```
 
-## Deployment
+## Scripts
 
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
+| Script | Para qué |
+|---|---|
+| `start:dev` | Servidor local con recarga |
+| `build` | Compila a `dist/` |
+| `build:lambda` | `build` y empaqueta la Lambda en `dist-lambda/` (solo el código que usa) |
+| `lint`, `format` | oxlint y Prettier |
+| `job:daily` | El proceso diario a mano, después de `build` |
 
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
+## Arquitectura
 
-```bash
-$ npm install -g @nestjs/mau
-$ mau deploy
+```text
+src/
+├── lambda.ts             La Lambda: API Gateway, trigger de Cognito y jobs
+├── main.ts               Servidor HTTP local
+├── common/               Dinero en centavos, fechas en la zona del usuario, errores, validación
+├── auth/                 Cognito (JWT local o claims de API Gateway), premium y rutas internas
+├── balances/             Saldos y patrimonio: la única fórmula (§3.1)
+├── accounts/ cards/      Cuentas, tarjetas y pago de tarjeta
+├── transactions/ recurring-transactions/ budgets/ pockets/
+├── movements/            GET /movements
+├── dashboard/ calendar/ alerts/
+├── conversations/        Historial de Piggy y turnos internos
+├── idempotency/          Idempotency-Key sobre PostgreSQL
+└── database/             Configuración y migraciones
 ```
 
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
+- **Cada regla existe una vez.** El Dashboard, Mis Tarjetas, el calendario y Piggy leen de los mismos servicios, así que no pueden decir números distintos.
+- **Dinero en centavos.** Se suma con enteros y se guarda como `NUMERIC`; la API lo entrega como número con dos decimales.
+- **Fechas.** "Hoy" y "este mes" son los de la zona horaria del usuario (`usuarios.zona_horaria`), no los del servidor.
+- **AWS**: Lambda en la VPC, API Gateway HTTP API, RDS Proxy, EventBridge Scheduler y CodeDeploy. Cómo se despliega y por qué, en [docs/despliegue.md](docs/despliegue.md).
 
-## Observability
+## Convenciones de la API
 
-In production applications, observability is essential for understanding how your system behaves, detecting issues early, and maintaining reliable performance.
+- **Errores** siempre con `{ "error": { "code", "message", "fields" } }` (contrato §1). Además de los del contrato: `409 idempotency_key_in_use`, `422 idempotency_key_reused`, `403 forbidden` (rutas internas) y `500 internal_error`. Un 500 nunca trae detalles internos.
+- **`Idempotency-Key`** (un UUID por intento del usuario) es obligatoria en `POST /transactions`, `POST /cards/:cardId/payments` y `POST /pockets/:pocketId/movements`. Un reintento con la misma llave regresa la misma respuesta con `Idempotent-Replayed: true` y no mueve dinero otra vez. Con `?dryRun=true` no hace falta.
+- **Recursos de otro usuario** responden 404, no 403.
 
-[NestJS Observe](https://observe.nestjs.com) automatically instruments your NestJS application, giving you deep visibility into your system with minimal setup:
+## Decisiones adoptadas
 
-- **Distributed tracing:** Follow requests across services and understand how they flow through your system.
-- **Waterfall analysis:** Visualize request execution and identify slow operations, bottlenecks, and unexpected delays.
-- **Performance analysis:** Analyze application performance in real time and quickly pinpoint areas that need optimization.
-- **Metrics:** Track key application and infrastructure metrics to understand system health and performance trends.
-- **Logging:** Centralize and correlate logs with traces and other telemetry to make debugging easier.
-- **Error tracking:** Detect errors quickly and investigate their root causes with the surrounding context.
-- **SLA monitoring:** Track service-level objectives and identify when your application is approaching or exceeding defined thresholds.
-- **Alarms and alerts:** Set up alerts for critical errors, performance degradation, SLA violations, and other anomalies so your team can react quickly.
+Se tomó la propuesta de cada decisión abierta de requerimientos-backend.md §6:
 
-This project is already instrumented. To connect it, run this and approve the code it prints at [observe.nestjs.com/link](https://observe.nestjs.com/link) - signing up for free if you have no account:
+| | Decisión |
+|---|---|
+| D1 | Cuentas y traspasos completos |
+| D2 | El patrimonio resta la deuda de las tarjetas |
+| D3 | Ingreso: recurrente o variable; gasto: fijo o variable; las recurrentes nunca son variables |
+| D4 | Solo el gasto que cruza un umbral guarda `nivel_alerta` |
+| D5 | Las recurrentes se registran solas |
+| D6, D15 | Un abono sale de la cuenta que elige el usuario y no pasa de su saldo |
+| D7 | Liberar un apartado regresa todo a una cuenta y lo cierra |
+| D9 | El pago de tarjeta se avisa 10 días antes |
+| D10 | Los movimientos llevan hora opcional |
+| D14 | Un gasto mayor a lo disponible responde `409 insufficient_funds` |
+| D16 | Una tarjeta con movimientos se desactiva; sin movimientos, se borra |
+| D17 | La API pide monto objetivo en los apartados |
 
-```bash
-$ npx @nestjs/observe link
-```
+Otras reglas que no estaban escritas:
 
-It writes the app key and secret into `.env` and makes every `nest start` script (`start`, `start:dev`, `start:debug`) load it. In production, set `OBSERVE_APP_KEY` and `OBSERVE_APP_SECRET` in the environment instead.
+- Cada usuario nace con una cuenta **Efectivo** en 0.
+- No hay transacciones con fecha futura: lo que viene va como recurrente.
+- Las recurrentes generadas no revisan saldo (ya pasaron); desactivar una cuenta o tarjeta pausa sus recurrentes.
+- Traspasos y movimientos de apartados no pueden ser anteriores al saldo inicial de su cuenta.
+- La proyección cuenta todos los pagos del calendario, también los recurrentes con tarjeta de crédito, igual que el simulador del front.
 
-Or do it by hand: create an application and an API key at [observe.nestjs.com](https://observe.nestjs.com), and set the pair as `OBSERVE_APP_KEY` and `OBSERVE_APP_SECRET` in the environment the app runs in.
+## Pendiente
 
-The free plan needs no payment details and covers 300,000 events a month. You can also browse the [live demo](https://www.observe-demo.nestjs.com/dashboard) first - the whole dashboard over a busy service's data, with nothing to install.
-
-## Resources
-
-Check out a few resources that may come in handy when working with NestJS:
-
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Auto-instrument your application with [NestJS Observe](https://observe.nestjs.com). Distributed tracing, metrics, and logging made easy. Error tracking and performance monitoring for your NestJS applications.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
-
-## Support
-
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
-
-## Stay in touch
-
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
-
-## License
-
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+- Los límites del plan premium (100 consultas, 200,000 tokens, $79) son los del ejemplo del contrato: hay que confirmarlos.
+- La rama no tiene clave de Jira (`SCRUM-XX`); se puede renombrar al abrir el PR.
+- Lo que falta en AWS está al final de [docs/despliegue.md](docs/despliegue.md).

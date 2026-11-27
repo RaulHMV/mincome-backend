@@ -1,5 +1,12 @@
 import { ConfigService } from '@nestjs/config';
-import { createDatabaseConfig } from './database.config';
+import { readdirSync } from 'node:fs';
+import { join } from 'node:path';
+import { types } from 'pg';
+import { MIGRATIONS } from './database/migrations';
+import {
+  createDatabaseConfig,
+  createDataSourceOptions,
+} from './database.config';
 
 describe('createDatabaseConfig', () => {
   const originalEnvironment = process.env;
@@ -35,6 +42,56 @@ describe('createDatabaseConfig', () => {
         connectionTimeoutMillis: 5000,
       },
     });
+  });
+
+  it('sizes the pool for Lambda behind RDS Proxy and requires TLS', () => {
+    process.env.AWS_LAMBDA_FUNCTION_NAME = 'mincome-backend';
+
+    expect(createDatabaseConfig()).toMatchObject({
+      retryAttempts: 1,
+      retryDelay: 1000,
+      ssl: { rejectUnauthorized: true },
+      extra: { max: 2, min: 0 },
+    });
+  });
+
+  it('connects without TLS locally unless DB_SSL is true', () => {
+    expect(createDataSourceOptions()).toMatchObject({ ssl: false });
+
+    process.env.DB_SSL = 'true';
+    expect(createDataSourceOptions()).toMatchObject({
+      ssl: { rejectUnauthorized: true },
+    });
+
+    process.env.DB_SSL = 'yes';
+    expect(() => createDataSourceOptions()).toThrow(
+      'DB_SSL must be true or false',
+    );
+  });
+
+  it('signs an RDS Proxy IAM token instead of reading DB_PASSWORD', async () => {
+    delete process.env.DB_PASSWORD;
+    Object.assign(process.env, {
+      DB_IAM_AUTH: 'true',
+      DB_SSL: 'true',
+      AWS_REGION: 'us-east-1',
+      // Credenciales falsas: el token se firma localmente, sin red.
+      AWS_ACCESS_KEY_ID: 'AKIAIOSFODNN7EXAMPLE',
+      AWS_SECRET_ACCESS_KEY: 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY',
+    });
+
+    const { password } = createDataSourceOptions() as { password: unknown };
+    expect(password).toBeInstanceOf(Function);
+    const token = await (password as () => Promise<string>)();
+    expect(token).toMatch(
+      /^database\.example\.com:5432\/\?Action=connect&DBUser=mincome_app&/,
+    );
+    expect(token).toContain('X-Amz-Signature=');
+
+    process.env.DB_SSL = 'false';
+    expect(() => createDataSourceOptions()).toThrow(
+      'DB_IAM_AUTH needs DB_SSL=true',
+    );
   });
 
   it('rejects an invalid pool size', () => {
@@ -91,6 +148,34 @@ describe('createDatabaseConfig', () => {
 
     expect(() => createDatabaseConfig()).toThrow(
       'DB_PORT must be a positive integer',
+    );
+  });
+
+  it('shares the migrations with the TypeORM CLI', () => {
+    const options = createDataSourceOptions();
+
+    expect(options.migrationsTableName).toBe('migraciones');
+    expect(options.migrations).toBe(MIGRATIONS);
+    expect(options).not.toHaveProperty('autoLoadEntities');
+  });
+
+  it('lists every migration file, in order', () => {
+    const directory = join(__dirname, 'database', 'migrations');
+    const files = readdirSync(directory)
+      .filter((file) => /^\d+-\w+\.ts$/.test(file))
+      .sort();
+
+    expect(MIGRATIONS.map((migration) => migration.name)).toEqual(
+      files.map((file) => {
+        const [timestamp, name] = file.replace(/\.ts$/, '').split('-');
+        return `${name}${timestamp}`;
+      }),
+    );
+  });
+
+  it('reads DATE columns as YYYY-MM-DD text', () => {
+    expect(types.getTypeParser(types.builtins.DATE)('2026-10-24')).toBe(
+      '2026-10-24',
     );
   });
 });

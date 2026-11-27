@@ -20,7 +20,7 @@ variable "private_subnet_ids" {
 }
 
 variable "database_allowed_cidr_blocks" {
-  description = "CIDR blocks allowed to connect to PostgreSQL port 5432."
+  description = "Admin networks (where Terraform or a VPN runs) allowed to reach PostgreSQL directly. The backend Lambda goes through the RDS Proxy instead."
   type        = list(string)
 }
 
@@ -31,7 +31,7 @@ variable "database_name" {
 }
 
 variable "database_host" {
-  description = "PostgreSQL endpoint used by the PostgreSQL provider to create the schema."
+  description = "PostgreSQL endpoint used by the PostgreSQL provider to create the database."
   type        = string
 }
 
@@ -63,4 +63,34 @@ variable "database_storage_gb" {
   description = "Allocated RDS storage in GiB."
   type        = number
   default     = 20
+}
+
+variable "database_app_username" {
+  description = "PostgreSQL user the backend connects as (through the RDS Proxy). It owns the database, without rds_superuser."
+  type        = string
+  default     = "mincome_app"
+}
+
+variable "database_multi_az" {
+  description = "Standby replica in a second Availability Zone. Recommended in production; it doubles the instance cost."
+  type        = bool
+  default     = false
+}
+
+variable "database_deletion_protection" {
+  description = "Block deleting the RDS instance. Set to false only for throwaway environments."
+  type        = bool
+  default     = true
+}
+
+variable "database_skip_final_snapshot" {
+  description = "Skip the final snapshot when the instance is deleted. Set to true only for throwaway environments."
+  type        = bool
+  default     = false
+}
+
+variable "log_retention_days" {
+  description = "Days to keep the RDS logs in CloudWatch."
+  type        = number
+  default     = 30
 }

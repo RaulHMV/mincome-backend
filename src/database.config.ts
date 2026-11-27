@@ -1,5 +1,15 @@
+import { Signer } from '@aws-sdk/rds-signer';
 import { ConfigService } from '@nestjs/config';
+import { readFileSync } from 'node:fs';
 import { TypeOrmModuleOptions } from '@nestjs/typeorm';
+import { types } from 'pg';
+import type { DataSourceOptions } from 'typeorm';
+import { MIGRATIONS } from './database/migrations';
+
+// `pg` convierte DATE en un Date de JavaScript con la zona horaria del
+// servidor, lo que puede mover el día. Las fechas se manejan como texto
+// 'YYYY-MM-DD' en toda la aplicación.
+types.setTypeParser(types.builtins.DATE, (value) => value);
 
 function getEnvironmentVariable(
   name: string,
@@ -21,10 +31,10 @@ function getRequiredEnvironmentVariable(
   return value;
 }
 
-function getPositiveIntegerEnvironmentVariable(
+function getIntegerEnvironmentVariable(
   name: string,
   defaultValue: number,
-  configService?: ConfigService,
+  { min, configService }: { min: 0 | 1; configService?: ConfigService },
 ): number {
   const value = getEnvironmentVariable(name, configService);
 
@@ -34,48 +44,132 @@ function getPositiveIntegerEnvironmentVariable(
 
   const parsedValue = Number(value);
 
-  if (!Number.isInteger(parsedValue) || parsedValue <= 0) {
+  if (!Number.isInteger(parsedValue) || parsedValue < min) {
     throw new Error(
-      `Database environment variable ${name} must be a positive integer`,
+      `Database environment variable ${name} must be ${min === 0 ? 'a non-negative' : 'a positive'} integer`,
     );
   }
 
   return parsedValue;
 }
 
-export function createDatabaseConfig(
+function getPositiveIntegerEnvironmentVariable(
+  name: string,
+  defaultValue: number,
   configService?: ConfigService,
-): TypeOrmModuleOptions {
+): number {
+  return getIntegerEnvironmentVariable(name, defaultValue, {
+    min: 1,
+    configService,
+  });
+}
+
+function getBooleanEnvironmentVariable(
+  name: string,
+  defaultValue: boolean,
+  configService?: ConfigService,
+): boolean {
+  const value = getEnvironmentVariable(name, configService)?.trim();
+  if (value === undefined || value === '') {
+    return defaultValue;
+  }
+  if (value !== 'true' && value !== 'false') {
+    throw new Error(
+      `Database environment variable ${name} must be true or false`,
+    );
+  }
+  return value === 'true';
+}
+
+function runsOnLambda(configService?: ConfigService): boolean {
+  return Boolean(
+    getEnvironmentVariable('AWS_LAMBDA_FUNCTION_NAME', configService),
+  );
+}
+
+/**
+ * TLS verificando el certificado. RDS Proxy usa certificados de ACM, que
+ * Node ya reconoce; para conectarse directo a RDS hace falta el bundle de
+ * AWS en DB_SSL_CA_FILE.
+ */
+function createSslOptions(configService?: ConfigService) {
+  if (
+    !getBooleanEnvironmentVariable(
+      'DB_SSL',
+      runsOnLambda(configService),
+      configService,
+    )
+  ) {
+    return false;
+  }
+  const caFile = getEnvironmentVariable('DB_SSL_CA_FILE', configService);
   return {
-    type: 'postgres',
+    rejectUnauthorized: true,
+    ...(caFile ? { ca: readFileSync(caFile, 'utf8') } : {}),
+  };
+}
+
+/**
+ * Con DB_IAM_AUTH=true (en AWS) la contraseña es un token IAM de RDS Proxy que
+ * dura 15 minutos y se genera por cada conexión nueva, sin llamar a la red:
+ * la Lambda no guarda ninguna contraseña de la base, solo su rol puede
+ * conectarse (rds-db:connect). Si no, DB_PASSWORD.
+ */
+function createPasswordOption(
+  connection: { host: string; port: number; username: string; ssl: unknown },
+  configService?: ConfigService,
+): string | (() => Promise<string>) {
+  if (!getBooleanEnvironmentVariable('DB_IAM_AUTH', false, configService)) {
+    return getRequiredEnvironmentVariable('DB_PASSWORD', configService);
+  }
+  if (connection.ssl === false) {
+    throw new Error(
+      'DB_IAM_AUTH needs DB_SSL=true: RDS only accepts IAM tokens over TLS',
+    );
+  }
+  const signer = new Signer({
+    hostname: connection.host,
+    port: connection.port,
+    username: connection.username,
+    region: getRequiredEnvironmentVariable('AWS_REGION', configService),
+  });
+  return () => signer.getAuthToken();
+}
+
+/**
+ * Lo que comparten la aplicación y el CLI de TypeORM.
+ *
+ * En Lambda cada instancia atiende una petición a la vez y RDS Proxy reparte
+ * las conexiones, así que el pool por instancia es chico y sin mínimo.
+ */
+export function createDataSourceOptions(
+  configService?: ConfigService,
+): DataSourceOptions {
+  const onLambda = runsOnLambda(configService);
+  const connection = {
     host: getRequiredEnvironmentVariable('DB_HOST', configService),
     port: getPositiveIntegerEnvironmentVariable('DB_PORT', 5432, configService),
-    database: getRequiredEnvironmentVariable('DB_NAME', configService),
     username: getRequiredEnvironmentVariable('DB_USER', configService),
-    password: getRequiredEnvironmentVariable('DB_PASSWORD', configService),
-    autoLoadEntities: true,
+    ssl: createSslOptions(configService),
+  };
+  return {
+    type: 'postgres',
+    ...connection,
+    database: getRequiredEnvironmentVariable('DB_NAME', configService),
+    password: createPasswordOption(connection, configService),
     synchronize: false,
-    retryAttempts: getPositiveIntegerEnvironmentVariable(
-      'DB_RETRY_ATTEMPTS',
-      5,
-      configService,
-    ),
-    retryDelay: getPositiveIntegerEnvironmentVariable(
-      'DB_RETRY_DELAY_MS',
-      3000,
-      configService,
-    ),
+    migrations: MIGRATIONS,
+    migrationsTableName: 'migraciones',
     extra: {
       max: getPositiveIntegerEnvironmentVariable(
         'DB_POOL_MAX',
-        20,
+        onLambda ? 2 : 20,
         configService,
       ),
-      min: getPositiveIntegerEnvironmentVariable(
-        'DB_POOL_MIN',
-        2,
+      min: getIntegerEnvironmentVariable('DB_POOL_MIN', onLambda ? 0 : 2, {
+        min: 0,
         configService,
-      ),
+      }),
       idleTimeoutMillis: getPositiveIntegerEnvironmentVariable(
         'DB_POOL_IDLE_TIMEOUT_MS',
         30000,
@@ -87,5 +181,26 @@ export function createDatabaseConfig(
         configService,
       ),
     },
+  };
+}
+
+export function createDatabaseConfig(
+  configService?: ConfigService,
+): TypeOrmModuleOptions {
+  // En Lambda, API Gateway corta a los 30 s: más vale fallar rápido.
+  const onLambda = runsOnLambda(configService);
+  return {
+    ...createDataSourceOptions(configService),
+    autoLoadEntities: true,
+    retryAttempts: getIntegerEnvironmentVariable(
+      'DB_RETRY_ATTEMPTS',
+      onLambda ? 1 : 5,
+      { min: 0, configService },
+    ),
+    retryDelay: getPositiveIntegerEnvironmentVariable(
+      'DB_RETRY_DELAY_MS',
+      onLambda ? 1000 : 3000,
+      configService,
+    ),
   };
 }
