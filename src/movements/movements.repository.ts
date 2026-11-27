@@ -80,7 +80,7 @@ export class MovementsRepository {
               destination_account_name AS "destinationAccountName",
               destination_account_type AS "destinationAccountType"
        FROM (${union}) movimientos
-       ORDER BY date DESC, created_at DESC, id DESC
+       ORDER BY movimientos.date DESC, movimientos.created_at DESC, movimientos.id DESC
        LIMIT ${limit} OFFSET ${offset}`,
       params.values,
     );
