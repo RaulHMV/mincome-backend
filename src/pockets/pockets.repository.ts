@@ -73,15 +73,26 @@ export class PocketsRepository {
     return rows[0] ?? null;
   }
 
-  /** Bloquea los apartados activos del usuario mientras se revisa el tope de 10. */
-  async lockActive(
+  /**
+   * Cuántos apartados activos tiene, con la fila del usuario bloqueada hasta
+   * el final de la transacción: dos altas simultáneas se forman y la segunda
+   * cuenta lo que la primera ya guardó. Bloquear solo los apartados activos no
+   * basta, porque no detiene las filas nuevas. FOR NO KEY UPDATE no estorba a
+   * las FK que apuntan a usuarios.
+   */
+  async countActiveLockingOwner(
     manager: EntityManager,
     userId: string,
-  ): Promise<PocketRow[]> {
-    return manager.query(
-      `SELECT ${POCKET_COLUMNS} FROM apartados WHERE usuario_id = $1 AND activo FOR UPDATE`,
+  ): Promise<number> {
+    await manager.query(
+      `SELECT 1 FROM usuarios WHERE id = $1 FOR NO KEY UPDATE`,
       [userId],
     );
+    const [{ total }]: { total: number }[] = await manager.query(
+      `SELECT count(*)::int AS total FROM apartados WHERE usuario_id = $1 AND activo`,
+      [userId],
+    );
+    return total;
   }
 
   /** Nombre único entre los activos, sin distinguir mayúsculas, igual que el índice uq_apartados_usuario_id_nombre. */

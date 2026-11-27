@@ -70,9 +70,11 @@ export class PocketsService {
   async create(user: AuthUser, dto: CreatePocketDto): Promise<PocketDto> {
     const today = todayIn(user.timeZone);
     const pocketId = await this.dataSource.transaction(async (manager) => {
-      // Bloquear los activos hace que dos altas simultáneas no pasen juntas el tope.
-      const active = await this.pocketsRepository.lockActive(manager, user.id);
-      if (active.length >= MAX_ACTIVE_POCKETS) {
+      const active = await this.pocketsRepository.countActiveLockingOwner(
+        manager,
+        user.id,
+      );
+      if (active >= MAX_ACTIVE_POCKETS) {
         throw new ConflictError(
           `Ya tienes ${MAX_ACTIVE_POCKETS} apartados activos; libera uno para crear otro.`,
         );
