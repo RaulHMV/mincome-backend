@@ -6,6 +6,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { AccountsModule } from './accounts/accounts.module';
 import { AuthModule } from './auth/auth.module';
 import { BudgetsModule } from './budgets/budgets.module';
+import { CalendarModule } from './calendar/calendar.module';
 import { CardsModule } from './cards/cards.module';
 import { CategoriesModule } from './categories/categories.module';
 import { ApiExceptionFilter } from './common/errors/api-exception.filter';
@@ -59,6 +60,7 @@ export const { ObserveModule, ObserveInstrument } = createObserveModule();
     RecurringTransactionsModule,
     PocketsModule,
     MovementsModule,
+    CalendarModule,
   ],
   providers: [
     {
