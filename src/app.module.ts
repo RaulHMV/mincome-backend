@@ -14,6 +14,7 @@ import { AppConfigModule } from './config/app-config.module';
 import { createDatabaseConfig } from './database.config';
 import { HealthModule } from './health/health.module';
 import { IdempotencyKeysModule } from './idempotency/idempotency-keys.module';
+import { MovementsModule } from './movements/movements.module';
 import { PlansModule } from './plans/plans.module';
 import { PocketsModule } from './pockets/pockets.module';
 import { RecurringTransactionsModule } from './recurring-transactions/recurring-transactions.module';
@@ -57,6 +58,7 @@ export const { ObserveModule, ObserveInstrument } = createObserveModule();
     TransactionsModule,
     RecurringTransactionsModule,
     PocketsModule,
+    MovementsModule,
   ],
   providers: [
     {
