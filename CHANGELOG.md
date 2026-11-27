@@ -21,7 +21,9 @@ Todos los cambios importantes de este proyecto se anotan aquí, con el formato d
 - Historial de Piggy (`/conversations`, solo premium) y las rutas internas de turnos para mincome-ai-wrapper, con cuota por consultas y tokens.
 - `Idempotency-Key` obligatoria en los POST que mueven dinero, con las respuestas guardadas en PostgreSQL y cifradas.
 - Handler de Lambda para API Gateway, Cognito, el proceso diario y las migraciones, empaquetado con esbuild (~2 MB en zip).
-- Plantilla de AWS SAM, RDS Proxy y usuaria de la app en Terraform, CI y despliegue con OIDC (docs/despliegue.md).
+- Infraestructura completa en Terraform, en componentes con estado propio: VPC privada, RDS con RDS Proxy (IAM de punta a punta, sin contraseñas), la llave de idempotencia, Cognito y el backend (Lambda, HTTP API, proceso diario y alarmas).
+- Pipelines de GitHub Actions con OIDC: Bootstrap, Deploy all, Infra y Backend, con `plan`, `apply`/`deploy` y `destroy` y palabras de seguridad. Dos roles de mínimo privilegio con permissions boundary.
+- Despliegue de la app con versiones de Lambda: migraciones con la versión nueva antes de moverle el tráfico y regreso automático si falla el smoke test.
 - Pruebas unitarias de los cálculos, e2e de cada endpoint y escenarios de falla cercanos a producción.
 
 ### Cambiado

@@ -5,8 +5,6 @@ dist/
 !.env.example
 *.tsbuildinfo
 dist-lambda/
-.aws-sam/
-samconfig.local.toml
 
 # Terraform: el estado y los .tfvars llevan secretos; el lock sí se versiona.
 .terraform/

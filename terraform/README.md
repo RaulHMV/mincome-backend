@@ -1,60 +1,38 @@
-# Mincome database Terraform
+# Terraform de Mincome backend
 
-This directory defines the data layer the backend Lambda uses:
+Toda la infraestructura del backend, en seis componentes independientes. Cada uno tiene su propio estado (`production/<componente>.tfstate` en el bucket `mincome-tfstate-<cuenta>-<región>`) y se puede planear, aplicar o destruir solo. Los pipelines están en [docs/despliegue.md](../docs/despliegue.md).
 
-- The private PostgreSQL RDS instance, the `mincome` database and its
-  `pgcrypto` extension.
-- `mincome_app`, the PostgreSQL user the backend connects as. It owns the
-  database (so the migrations can create tables and trusted extensions such as
-  `pg_trgm` and `unaccent`) but is not `rds_superuser`.
-- An RDS Proxy in front of the instance. The Lambda connects to it with an IAM
-  token (`rds-db:connect`), so no database password reaches the Lambda; the
-  proxy reads `mincome_app`'s password from Secrets Manager.
-- Security groups chained by reference: backend Lambda → proxy → database.
-  `database_allowed_cidr_blocks` only opens the database to admin networks.
+| Componente | Depende de | Publica en SSM (`/mincome/production/…`) |
+|---|---|---|
+| [`bootstrap`](bootstrap) | — | — |
+| [`network`](network) | — | `network/vpc-id`, `network/private-subnet-ids` |
+| [`database`](database) | `network` | `database/proxy-endpoint`, `proxy-resource-id`, `lambda-security-group-id`, `name`, `port`, `app-user`, `master-user` |
+| [`secrets`](secrets) | — | — (el secreto `mincome/production/backend/idempotency-keys`) |
+| [`auth`](auth) | — (el trigger, de `backend`) | `auth/user-pool-id`, `user-pool-arn`, `client-ids` |
+| [`backend`](backend) | `network`, `database`, `secrets`, `auth` | `backend/api-url`, `backend/package` |
 
-The tables are not managed here. The `cyrilgdn/postgresql` provider has no
-`postgresql_table` resource (only a `postgresql_tables` data source), so the
-schema lives in the TypeORM migrations under `src/database/migrations`. In AWS
-the deploy runs them by invoking the Lambda with `{"job": "migrate"}` (see
-[docs/despliegue.md](../docs/despliegue.md)); locally, `npm run migration:run`.
+Orden para crear: `bootstrap` → `network` → `database` → `secrets` → `auth` → `backend` → `auth` otra vez (para conectar el trigger de Cognito a la Lambda). Para destruir, al revés.
 
-## Apply
+## Correrlo a mano
 
-The PostgreSQL provider needs the RDS endpoint before it can create the user
-and the logical database, and it must reach the instance from an address in
-`database_allowed_cidr_blocks`. Apply the RDS service first, then the rest with
-the endpoint returned by Terraform:
+Lo normal es el pipeline. Para revisar algo desde tu máquina, con credenciales que puedan asumir el rol del componente:
 
-```powershell
-terraform init
-terraform apply -target=aws_db_instance.database
-$endpoint = terraform output -raw database_endpoint
-terraform apply -var="database_host=$endpoint"
+```bash
+cd terraform/network
+terraform init \
+  -backend-config="bucket=mincome-tfstate-<cuenta>-us-east-1" \
+  -backend-config="key=production/network.tfstate" \
+  -backend-config="region=us-east-1"
+terraform plan
 ```
 
-Copy `terraform.tfvars.example` to `terraform.tfvars` (ignored by Git) or pass
-the variables through the environment. Do not store credentials in the
-repository.
+`backend` además pide `-var package_s3_key=backend/<commit>.zip -var package_sha256=<base64>`: es más fácil desde el pipeline.
 
-The outputs `database_proxy_endpoint`, `database_proxy_resource_id`,
-`database_app_username`, `backend_lambda_security_group_id` and
-`private_subnet_ids` are the parameters of the SAM stack in `template.yaml`.
+## Decisiones
 
-## Defaults worth knowing
-
-| Variable | Default | Why |
-|---|---|---|
-| `database_deletion_protection` | `true` | Set `false` only for throwaway environments. |
-| `database_skip_final_snapshot` | `false` | A final snapshot is taken when the instance is deleted. |
-| `database_multi_az` | `false` | Turn on in production: a standby in a second AZ, at twice the instance cost. |
-| `log_retention_days` | `30` | RDS logs go to CloudWatch log groups with retention instead of growing forever. |
-
-## Pending, outside this directory
-
-- **Remote state.** The state holds the master and app passwords. Keep it in an
-  encrypted S3 bucket with locking (`use_lockfile = true`) rather than on a
-  laptop.
-- **Master password.** It comes from a variable. Moving it to
-  `manage_master_user_password` (Secrets Manager with rotation) needs the
-  PostgreSQL provider to read it from that secret.
+- **Sin el provider de PostgreSQL.** GitHub no llega a la base privada. RDS crea la base (`db_name`) y el job `{"job": "bootstrap"}` de la Lambda, que sí está en la VPC, crea a `mincome_app`.
+- **Sin contraseñas.** La del usuario maestro la administra RDS en Secrets Manager (`manage_master_user_password`). `mincome_app` entra con IAM de punta a punta: RDS Proxy con `default_auth_scheme = "IAM_AUTH"`.
+- **El estado no guarda la llave de idempotencia** en `secrets` (recurso efímero y `secret_string_wo`). Sí queda en el de `backend`, porque la Lambda la recibe como variable de entorno.
+- **Protección contra borrado** de RDS y del user pool, controlada con la variable `deletion_protection` (en el pipeline, `DELETION_PROTECTION` del environment).
+- **Etiquetas por omisión** (`Service`, `Environment`, `Component`, `ManagedBy`) en todo: el rol de infra solo puede borrar red con `Service=mincome`.
+- **Versiones fijas**: Terraform `>= 1.11` (en el pipeline, 1.17.2) y el provider de AWS `~> 6.72.0`, con su `.terraform.lock.hcl` en cada componente.
