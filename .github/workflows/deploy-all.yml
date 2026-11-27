@@ -1,0 +1,86 @@
+name: Deploy all
+
+# Todo Mincome backend de una vez: la infra (red, base, secretos y Cognito),
+# la app y al final otra vez Cognito, para conectarle el trigger a la Lambda
+# que ya existe. Destroy va al revés: primero la app, luego la infra.
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: plan no cambia nada; deploy y destroy piden la palabra de seguridad
+        type: choice
+        options: [plan, deploy, destroy]
+        default: plan
+      confirm:
+        description: Escribe "deploy" o "destroy"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  confirm:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Palabra de seguridad
+        env:
+          ACTION: ${{ inputs.action }}
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$ACTION" != plan ] && [ "$CONFIRM" != "$ACTION" ]; then
+            echo "::error::Para $ACTION escribe exactamente: $ACTION"
+            exit 1
+          fi
+
+  # ----------------------------------------------------------- plan y deploy
+  infra:
+    needs: confirm
+    if: inputs.action != 'destroy'
+    uses: ./.github/workflows/infra.yml
+    with:
+      component: all
+      action: ${{ inputs.action == 'deploy' && 'apply' || 'plan' }}
+      confirm: ${{ inputs.confirm }}
+    secrets: inherit
+
+  backend:
+    needs: infra
+    if: inputs.action != 'destroy'
+    uses: ./.github/workflows/backend.yml
+    with:
+      action: ${{ inputs.action }}
+      confirm: ${{ inputs.confirm }}
+    secrets: inherit
+
+  # En el primer despliegue Cognito se creó antes que la Lambda.
+  cognito-trigger:
+    needs: backend
+    if: inputs.action == 'deploy'
+    uses: ./.github/workflows/infra.yml
+    with:
+      component: auth
+      action: apply
+      confirm: ${{ inputs.confirm }}
+    secrets: inherit
+
+  # ----------------------------------------------------------------- destroy
+  destroy-backend:
+    needs: confirm
+    if: inputs.action == 'destroy'
+    uses: ./.github/workflows/backend.yml
+    with:
+      action: destroy
+      confirm: ${{ inputs.confirm }}
+    secrets: inherit
+
+  destroy-infra:
+    needs: destroy-backend
+    if: inputs.action == 'destroy'
+    uses: ./.github/workflows/infra.yml
+    with:
+      component: all
+      action: destroy
+      confirm: ${{ inputs.confirm }}
+    secrets: inherit

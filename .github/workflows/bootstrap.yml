@@ -1,0 +1,127 @@
+name: Bootstrap
+
+# Lo primero, y casi nunca otra vez: con el rol del administrador (GitHub
+# environment "bootstrap", variable AWS_BOOTSTRAP_ROLE_ARN) crea el bucket del
+# estado, los roles mincome-backend-ci y mincome-backend-infra, el permissions
+# boundary y el bucket de paquetes (terraform/bootstrap).
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: plan no cambia nada; apply y destroy piden la palabra de seguridad
+        type: choice
+        options: [plan, apply, destroy]
+        default: plan
+      confirm:
+        description: Escribe "deploy" para apply o "destroy" para destroy
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: terraform-bootstrap
+  cancel-in-progress: false
+
+jobs:
+  bootstrap:
+    name: ${{ inputs.action }} bootstrap
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: bootstrap
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+      ACTION: ${{ inputs.action }}
+      CONFIRM: ${{ inputs.confirm }}
+    steps:
+      - name: Palabra de seguridad
+        run: |
+          case "$ACTION" in
+            plan) expected="" ;;
+            apply) expected="deploy" ;;
+            destroy) expected="destroy" ;;
+            *) echo "::error::Acción desconocida: $ACTION"; exit 1 ;;
+          esac
+          if [ -n "$expected" ] && [ "$CONFIRM" != "$expected" ]; then
+            echo "::error::Para $ACTION escribe exactamente: $expected"
+            exit 1
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.17.2
+          terraform_wrapper: false
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_BOOTSTRAP_ROLE_ARN }}
+          role-session-name: mincome-bootstrap-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # Terraform necesita dónde guardar su estado antes de correr: el bucket se
+      # crea vacío aquí y terraform/bootstrap lo importa y lo configura.
+      - name: Bucket del estado
+        run: |
+          set -euo pipefail
+          account=$(aws sts get-caller-identity --query Account --output text)
+          bucket="mincome-tfstate-${account}-${AWS_REGION}"
+          echo "STATE_BUCKET=$bucket" >> "$GITHUB_ENV"
+          if aws s3api head-bucket --bucket "$bucket" 2>/dev/null; then
+            echo "Ya existe: $bucket"
+            exit 0
+          fi
+          if [ "$ACTION" = destroy ]; then
+            echo "::error::No hay bucket de estado: no hay nada que destruir"
+            exit 1
+          fi
+          if [ "$AWS_REGION" = us-east-1 ]; then
+            aws s3api create-bucket --bucket "$bucket"
+          else
+            aws s3api create-bucket --bucket "$bucket" \
+              --create-bucket-configuration "LocationConstraint=$AWS_REGION"
+          fi
+          aws s3api put-public-access-block --bucket "$bucket" --public-access-block-configuration \
+            BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
+          aws s3api put-bucket-versioning --bucket "$bucket" --versioning-configuration Status=Enabled
+
+      - name: Terraform
+        run: |
+          set -euo pipefail
+          dir=terraform/bootstrap
+          terraform -chdir="$dir" init -input=false \
+            -backend-config="bucket=$STATE_BUCKET" \
+            -backend-config="key=bootstrap/terraform.tfstate" \
+            -backend-config="region=$AWS_REGION"
+          args=(-input=false -lock-timeout=5m -var "aws_region=$AWS_REGION" -var "state_bucket=$STATE_BUCKET")
+          case "$ACTION" in
+            plan) terraform -chdir="$dir" plan "${args[@]}" ;;
+            apply)
+              terraform -chdir="$dir" plan "${args[@]}" -out=tfplan
+              terraform -chdir="$dir" apply -input=false tfplan
+              ;;
+            # El bucket del estado se queda: guarda el estado de todo lo demás.
+            destroy)
+              terraform -chdir="$dir" destroy "${args[@]}" -auto-approve \
+                -target=aws_iam_role_policy.ci -target=aws_iam_role.ci \
+                -target=aws_iam_role_policy.infra -target=aws_iam_role.infra \
+                -target=aws_iam_policy.workload_boundary -target=aws_s3_bucket.artifacts
+              ;;
+          esac
+
+      - name: Resumen
+        if: inputs.action == 'apply'
+        run: |
+          {
+            echo "### Bootstrap listo"
+            echo "Pon estas variables en el GitHub environment **production**:"
+            echo
+            echo "| Variable | Valor |"
+            echo "|---|---|"
+            echo "| AWS_REGION | $AWS_REGION |"
+            echo "| AWS_INFRA_ROLE_ARN | $(terraform -chdir=terraform/bootstrap output -raw infra_role_arn) |"
+            echo "| AWS_CI_ROLE_ARN | $(terraform -chdir=terraform/bootstrap output -raw ci_role_arn) |"
+          } >> "$GITHUB_STEP_SUMMARY"
