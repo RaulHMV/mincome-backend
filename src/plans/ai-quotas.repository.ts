@@ -13,8 +13,13 @@ export interface AiUsageRow {
 export class AiQuotasRepository {
   constructor(private readonly dataSource: DataSource) {}
 
-  async findUsage(userId: string, period: string): Promise<AiUsageRow> {
-    const quota = await this.dataSource.manager.findOneBy(AiQuota, {
+  /** Con el manager de la transacción en curso, para ver lo que ya cambió en ella. */
+  async findUsage(
+    userId: string,
+    period: string,
+    manager: EntityManager = this.dataSource.manager,
+  ): Promise<AiUsageRow> {
+    const quota = await manager.findOneBy(AiQuota, {
       userId,
       period,
     });
