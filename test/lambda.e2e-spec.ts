@@ -278,6 +278,68 @@ describe('Lambda (e2e)', () => {
     });
   });
 
+  describe('{"job": "bootstrap"}', () => {
+    const appUser = 'mincome_app_e2e';
+    const saved = {
+      enabled: process.env.DB_BOOTSTRAP_ENABLED,
+      appUser: process.env.DB_APP_USER,
+    };
+
+    afterAll(async () => {
+      process.env.DB_BOOTSTRAP_ENABLED = saved.enabled;
+      process.env.DB_APP_USER = saved.appUser;
+      // La base de pruebas regresa a su dueño de siempre.
+      const dataSource = new DataSource(createDataSourceOptions());
+      await dataSource.initialize();
+      await dataSource.query(
+        `ALTER DATABASE "${process.env.DB_NAME}" OWNER TO CURRENT_USER`,
+      );
+      await dataSource.destroy();
+    });
+
+    it('solo corre en la Lambda de bootstrap', async () => {
+      delete process.env.DB_BOOTSTRAP_ENABLED;
+      await expect(handler({ job: 'bootstrap' }, CONTEXT)).rejects.toThrow(
+        'only runs in the db-bootstrap function',
+      );
+    });
+
+    it('crea al usuario de la app, le pasa la base y repetirlo no cambia nada', async () => {
+      process.env.DB_BOOTSTRAP_ENABLED = 'true';
+      process.env.DB_APP_USER = appUser;
+      const dataSource = new DataSource(createDataSourceOptions());
+      await dataSource.initialize();
+      try {
+        await dataSource.query(`DROP ROLE IF EXISTS ${appUser}`);
+        // Localmente no existe rds_iam: en RDS sí, y se le da.
+        await expect(handler({ job: 'bootstrap' }, CONTEXT)).resolves.toEqual({
+          appUser,
+          created: true,
+          iamAuth: false,
+        });
+        await expect(handler({ job: 'bootstrap' }, CONTEXT)).resolves.toEqual({
+          appUser,
+          created: false,
+          iamAuth: false,
+        });
+        const [{ owner }] = await dataSource.query(
+          `SELECT pg_get_userbyid(datdba) AS owner FROM pg_database WHERE datname = current_database()`,
+        );
+        expect(owner).toBe(appUser);
+      } finally {
+        await dataSource.destroy();
+      }
+    });
+
+    it('no acepta nombres que no sean identificadores simples', async () => {
+      process.env.DB_BOOTSTRAP_ENABLED = 'true';
+      process.env.DB_APP_USER = 'app"; DROP DATABASE mincome; --';
+      await expect(handler({ job: 'bootstrap' }, CONTEXT)).rejects.toThrow(
+        'DB_APP_USER must be a simple PostgreSQL identifier',
+      );
+    });
+  });
+
   it('rechaza un evento que no conoce', async () => {
     await expect(handler({ job: 'borrar-todo' }, CONTEXT)).rejects.toThrow(
       'Unsupported Lambda event',

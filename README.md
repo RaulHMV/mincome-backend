@@ -22,7 +22,7 @@ Todas las rutas van bajo `/api/v1` y piden `Authorization: Bearer <token de Cogn
 
 ## Variables de entorno
 
-Las de la base, Cognito, CORS, rutas internas e idempotencia están comentadas en [`.env.example`](.env.example). En Lambda, la plantilla de SAM las pone (ver [docs/despliegue.md](docs/despliegue.md)). La app valida su configuración al arrancar y no levanta si falta algo obligatorio.
+Las de la base, Cognito, CORS, rutas internas e idempotencia están comentadas en [`.env.example`](.env.example). En Lambda, las pone Terraform (componente `backend`, ver [docs/despliegue.md](docs/despliegue.md)). La app valida su configuración al arrancar y no levanta si falta algo obligatorio.
 
 ## Migraciones
 
@@ -84,7 +84,7 @@ src/
 - **Cada regla existe una vez.** El Dashboard, Mis Tarjetas, el calendario y Piggy leen de los mismos servicios, así que no pueden decir números distintos.
 - **Dinero en centavos.** Se suma con enteros y se guarda como `NUMERIC`; la API lo entrega como número con dos decimales.
 - **Fechas.** "Hoy" y "este mes" son los de la zona horaria del usuario (`usuarios.zona_horaria`), no los del servidor.
-- **AWS**: Lambda en la VPC, API Gateway HTTP API, RDS Proxy, EventBridge Scheduler y CodeDeploy. Cómo se despliega y por qué, en [docs/despliegue.md](docs/despliegue.md).
+- **AWS**: Lambda en una VPC privada, API Gateway HTTP API, RDS Proxy, Cognito y EventBridge Scheduler, todo en [Terraform](terraform/README.md). Los pipelines (plan, deploy, destroy con palabra de seguridad) y por qué, en [docs/despliegue.md](docs/despliegue.md).
 
 ## Convenciones de la API
 

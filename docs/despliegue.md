@@ -1,50 +1,68 @@
 # Despliegue en AWS
 
-El backend corre en **una Lambda** detrás de **API Gateway HTTP API**, dentro de la VPC, y llega a **RDS PostgreSQL** por **RDS Proxy**. La misma Lambda atiende el trigger *Post confirmation* de Cognito y el proceso diario de EventBridge Scheduler.
+Todo se despliega con **Terraform** desde GitHub Actions, sin llaves de AWS en el repositorio (OIDC). El backend corre en una Lambda dentro de una VPC privada, detrás de API Gateway HTTP API, y llega a RDS PostgreSQL por RDS Proxy.
 
 ```text
-Front ──JWT──▶ API Gateway ──▶ Lambda mincome-backend (alias live) ──IAM──▶ RDS Proxy ──▶ RDS
-                 │  · /api/v1/* con autorizador JWT de Cognito           (VPC, sin NAT)
+Front ──JWT──▶ API Gateway ──▶ Lambda mincome-backend (alias live) ──IAM──▶ RDS Proxy ──IAM──▶ RDS
+                 │  · /api/v1/* con autorizador JWT de Cognito            (VPC privada, sin NAT)
                  │  · /api/v1/internal/* con IAM (solo mincome-ai-wrapper)
                  │  · /api/v1/health sin autorización
 Cognito ──Post confirmation──▶ Lambda
 EventBridge Scheduler ──{"job":"daily"}──▶ Lambda
-CodeDeploy (hook PreTraffic) ──{"job":"migrate"}──▶ versión nueva, antes de recibir tráfico
+Pipeline ──{"job":"bootstrap"}──▶ Lambda mincome-backend-db-bootstrap (crea mincome_app)
+Pipeline ──{"job":"migrate"}──▶ versión nueva, antes de moverle el tráfico
 ```
 
-| Pieza | Dónde vive |
+## Componentes
+
+Cada componente es un directorio de [`terraform/`](../terraform/README.md) con su propio estado en S3. Se pasan datos entre sí con parámetros de SSM (`/mincome/production/<componente>/…`), así que nadie copia ids a mano.
+
+| Componente | Qué crea | Rol que lo aplica |
+|---|---|---|
+| `bootstrap` | El bucket del estado, los roles de GitHub, el permissions boundary y el bucket de paquetes | El tuyo (`AWS_BOOTSTRAP_ROLE_ARN`) |
+| `network` | VPC con dos subredes privadas, sin salida a internet, y flow logs | `mincome-backend-infra` |
+| `database` | RDS, RDS Proxy y los security groups | `mincome-backend-infra` |
+| `secrets` | La llave de `Idempotency-Key` | `mincome-backend-infra` |
+| `auth` | El user pool de Cognito, sus grupos y los clientes web y móvil | `mincome-backend-infra` |
+| `backend` | Las Lambdas, el HTTP API, el proceso diario y las alarmas | `mincome-backend-ci` |
+
+## Pipelines
+
+Todos se corren a mano desde **Actions** y piden una palabra de seguridad, escrita exactamente:
+
+| Acción | Palabra |
 |---|---|
-| RDS, RDS Proxy, usuaria `mincome_app`, security groups | [`terraform/`](../terraform/README.md) |
-| Lambda, API Gateway, Scheduler, alarmas, hook de migraciones | [`template.yaml`](../template.yaml) (AWS SAM) |
-| Despliegue | [`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml), con OIDC |
-| Pruebas, incluido el paquete de la Lambda | [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) |
+| `plan` | ninguna: no cambia nada |
+| `apply` (infra) o `deploy` (app) | `deploy` |
+| `destroy` | `destroy` |
+| `migrate` | `migrate` |
+| `rollback` | `rollback` |
 
-## El paquete de la Lambda
-
-`sam build` corre el [`Makefile`](../Makefile): `nest build` y después [`scripts/bundle-lambda.mjs`](../scripts/bundle-lambda.mjs) (esbuild). A AWS solo sube:
-
-| Archivo | Tamaño aprox. |
+| Workflow | Para qué |
 |---|---|
-| `lambda.js`: el código de la app y solo lo que usa de sus dependencias, minificado | 4.3 MB |
-| `lambda.js.map`: para que los errores en CloudWatch digan archivo y línea del código fuente | 4.6 MB |
-| `lambda.js.LEGAL.txt`: las licencias de las dependencias | 7 KB |
+| **Bootstrap** | Lo primero, y casi nunca otra vez: los roles y buckets de los demás pipelines. |
+| **Deploy all** | Todo de una vez: la infra, la app y otra vez `auth` para conectar el trigger de Cognito. `destroy` va al revés. |
+| **Infra** | Un componente de infra o todos (`network`, `database`, `secrets`, `auth`), con `plan`, `apply` o `destroy`. |
+| **Backend** | La app: `plan`, `deploy`, `migrate` (con la versión que atiende), `rollback` (a la versión que digas) o `destroy`. |
 
-Unos **2.2 MB en zip**. No sube `node_modules` (289 MB con las devDependencies), `src/`, `test/` ni los `.ts`. Se empaqueta la salida de `nest build` y no los `.ts` porque esbuild no emite la metadata de los decoradores que la inyección de dependencias de Nest necesita.
+Además, **CI** corre en cada PR: lint, tipos, pruebas, el paquete de la Lambda, y `terraform fmt` y `validate` de todos los componentes.
 
-`npm run test:lambda-bundle` corre las e2e de la Lambda contra ese archivo, copiado a una carpeta sin `node_modules` como `/var/task` en AWS. Así, si al paquete le falta algo, falla en CI y no en producción. CI lo corre en cada PR.
+### Cómo despliega la app
+
+1. Construye el paquete (`npm run build:lambda`: un solo archivo de ~4 MB, ~2.2 MB en zip) y lo sube a `backend/<commit>.zip`.
+2. `terraform apply` del componente `backend` publica una **versión nueva** de la Lambda. El alias `live`, al que apuntan API Gateway, Cognito y el Scheduler, se queda en la anterior: Terraform no lo mueve.
+3. Invoca `mincome-backend-db-bootstrap` con `{"job": "bootstrap"}`: crea al usuario `mincome_app` si no existe. Repetirlo no hace nada.
+4. Invoca **la versión nueva** con `{"job": "migrate"}` mientras el tráfico sigue en la anterior. Si falla, se detiene ahí y nadie la usa.
+5. Mueve `live` a la versión nueva.
+6. Prueba `GET /api/v1/health`. Si falla, regresa `live` a la versión anterior.
+
+Como la versión anterior sigue atendiendo mientras corren las migraciones, cada migración debe ser compatible con el código anterior: agrega columnas o tablas en un despliegue y quita lo viejo en otro, después.
+
+Para regresar a una versión sin desplegar: **Backend** → `rollback`, con el número de versión (las ves en la consola de Lambda o en el resumen de cada despliegue).
 
 ## Primera vez
 
-1. **Terraform** (`terraform/README.md`): RDS, la usuaria de la app y RDS Proxy. Anota sus salidas.
-2. **Llave de idempotencia** en Secrets Manager. Cifra las respuestas guardadas por `Idempotency-Key`, que traen datos financieros:
-
-   ```bash
-   aws secretsmanager create-secret --name mincome/backend/idempotency-keys \
-     --secret-string "$(openssl rand -base64 48)"
-   ```
-
-   Para rotarla, pon la nueva primero y la anterior después, separadas por coma. Cuando pasen 24 horas (lo que dura una llave), quita la anterior.
-3. **Rol de despliegue para GitHub (OIDC).** Necesitas el proveedor OIDC `token.actions.githubusercontent.com` en la cuenta (uno por cuenta) y un rol que solo pueda asumir este repo desde el ambiente `production`:
+1. **Tu rol de bootstrap.** Un rol de IAM que GitHub pueda asumir por OIDC desde este repo y el environment `bootstrap`, con permisos para crear roles y políticas de IAM, buckets de S3 y leer el proveedor OIDC. Si la cuenta todavía no tiene el proveedor `token.actions.githubusercontent.com`, créalo junto con el rol. Su confianza:
 
    ```json
    {
@@ -54,42 +72,39 @@ Unos **2.2 MB en zip**. No sube `node_modules` (289 MB con las devDependencies),
      "Condition": {
        "StringEquals": {
          "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
-         "token.actions.githubusercontent.com:sub": "repo:RaulHMV/mincome-backend:environment:production"
+         "token.actions.githubusercontent.com:sub": "repo:RaulHMV/mincome-backend:environment:bootstrap"
        }
      }
    }
    ```
 
-   Sus permisos son los que necesita `sam deploy` sobre este stack: CloudFormation, el bucket de SAM en S3, Lambda, API Gateway, IAM (crear los roles del stack), Logs, Scheduler, SQS, SNS, CloudWatch y CodeDeploy. Además, `secretsmanager:GetSecretValue` sobre la llave de idempotencia y `lambda:InvokeFunction` sobre la función, para las migraciones del primer despliegue. Limítalos a los recursos `mincome-backend*` donde se pueda.
-4. **Ambiente `production` en GitHub** (Settings → Environments), con revisores obligatorios y estas variables (no son secretos):
+2. **GitHub environments** (Settings → Environments):
+   - `bootstrap`: variables `AWS_BOOTSTRAP_ROLE_ARN` y `AWS_REGION`, con revisores obligatorios.
+   - `production`: revisores obligatorios y las variables de abajo.
+3. **Bootstrap** → `apply`, palabra `deploy`. Su resumen trae los dos ARN para el environment `production`.
+4. Variables del environment `production` (no son secretos):
 
-   | Variable | De dónde sale |
+   | Variable | Valor |
    |---|---|
-   | `AWS_REGION`, `AWS_DEPLOY_ROLE_ARN` | La cuenta y el rol del paso 3 |
-   | `PRIVATE_SUBNET_IDS` | `terraform output private_subnet_ids`, separadas por coma |
-   | `LAMBDA_SECURITY_GROUP_ID` | `terraform output backend_lambda_security_group_id` |
-   | `DATABASE_PROXY_ENDPOINT` | `terraform output database_proxy_endpoint` |
-   | `DATABASE_PROXY_RESOURCE_ID` | `terraform output database_proxy_resource_id` |
-   | `COGNITO_USER_POOL_ID`, `COGNITO_CLIENT_IDS` | El user pool y los app clients del front (web y móvil) |
-   | `WEB_APP_ORIGIN` | Origen del front, por ejemplo `https://app.mincome.mx` |
-   | `AI_WRAPPER_ROLE_ARN` | Rol de la Lambda de `mincome-ai-wrapper`; vacío deja cerradas `/internal/*` |
-   | `IDEMPOTENCY_KEYS_SECRET_ARN` | El secreto del paso 2 |
+   | `AWS_REGION` | La misma del bootstrap (`us-east-1` por omisión) |
+   | `AWS_INFRA_ROLE_ARN`, `AWS_CI_ROLE_ARN` | Del resumen del bootstrap |
+   | `WEB_APP_ORIGIN` | Origen del front, por ejemplo `https://app.mincome.mx` (opcional) |
+   | `AI_WRAPPER_ROLE_ARN` | Rol de la Lambda de mincome-ai-wrapper; vacío deja cerradas `/internal/*` |
    | `ALARM_EMAIL` | Quién recibe las alarmas (opcional) |
+   | `DELETION_PROTECTION` | `true`; solo `false` para poder destruir RDS y Cognito |
 
-5. **Desplegar**: Actions → Deploy → Run workflow.
-6. **Trigger de Cognito**: en el user pool, pon como *Post confirmation* la salida `BackendFunctionAliasArn`. Hazlo desde la consola o desde la infraestructura que maneja el pool. Con `aws cognito-idp update-user-pool`, todo lo que no mandes vuelve a su valor por omisión.
-7. **mincome-ai-wrapper** agrega su ruta `POST /chat` al mismo API con el export `mincome-backend-HttpApiId`.
+5. **Deploy all** → `deploy`, palabra `deploy`.
+6. El front toma `user_pool_id`, `web_client_id` y `mobile_client_id` de las salidas de `auth`, y la URL del API de las salidas de `backend` (o de `/mincome/production/backend/api-url` en SSM).
 
-## Cada despliegue
+## Mínimo privilegio
 
-1. `sam build` arma el paquete y `sam deploy` publica una versión nueva de la Lambda.
-2. CodeDeploy corre el hook *PreTraffic* (`MigrationsHookFunction`). El hook invoca **la versión nueva** con `{"job": "migrate"}` mientras el tráfico sigue en la anterior.
-3. Si las migraciones pasan, el alias `live` se mueve a la versión nueva. Si fallan, o si `BackendErrorsAlarm` o `Api5xxAlarm` suenan durante el despliegue, CodeDeploy deja el alias donde estaba.
-4. El workflow vuelve a pedir las migraciones (no hace nada si ya están; el primer despliegue no pasa por CodeDeploy) y prueba `GET /api/v1/health`.
-
-Como la versión anterior sigue atendiendo mientras corren las migraciones, cada migración debe ser compatible con el código anterior. Agrega columnas o tablas en un despliegue y quita lo viejo en otro, después.
-
-Para regresar a la versión anterior sin desplegar: `aws lambda update-alias --function-name <BackendFunctionName> --name live --function-version <versión>`.
+- **Dos roles para GitHub**, que solo puede asumir este repo desde el environment `production`:
+  - `mincome-backend-infra`: su estado (`production/{network,database,secrets,auth}.tfstate`); la VPC, RDS y el proxy de Mincome (borrar o cambiar la red pide la etiqueta `Service=mincome`; la instancia y su grupo de subredes, el nombre `mincome-*`); los secretos `mincome/production/*` y los `rds!*` que crea RDS; Cognito; sus parámetros de SSM y sus grupos de logs.
+  - `mincome-backend-ci`: su estado (`production/backend.tfstate`), los paquetes `backend/*`, y solo las Lambdas, colas, temas, alarmas, horarios y grupos de logs `mincome-backend*`. No toca la red, la base ni Cognito.
+- **Rutas de IAM separadas**: cada rol solo crea y cambia roles en su ruta (`/mincome/workload/infra/` o `/mincome/workload/backend/`) y ninguno toca `/mincome/pipeline/`, donde viven ellos.
+- **Permissions boundary obligatorio** (`mincome-workload-boundary`): todo rol que crean los pipelines lo lleva, y no pueden quitarlo. Aunque alguien escriba una política con `*`, el rol no pasa de logs, X-Ray, interfaces de red, `rds-db:connect`, leer sus secretos e invocar al backend.
+- **Las Lambdas**: el backend solo puede conectarse a la base como `mincome_app`; la de bootstrap, como el usuario maestro. Ninguna tiene contraseña de la base.
+- Las acciones de todas las políticas se revisaron con un linter de IAM (parliament); las que no aceptan un recurso concreto (crear una VPC, `Describe*`) se limitan a la región.
 
 ## Buenas prácticas por servicio
 
@@ -97,69 +112,80 @@ Para regresar a la versión anterior sin desplegar: `aws lambda update-alias --f
 
 | Práctica | Cómo |
 |---|---|
-| Paquete mínimo | esbuild con tree-shaking y minificado: ~2.2 MB en zip (arriba) |
+| Paquete mínimo | esbuild con tree-shaking y minificado: ~2.2 MB en zip, sin `node_modules` |
 | Graviton | `arm64`: más barato por milisegundo que x86 |
-| Arranque en frío una vez | La app de Nest y el pool se arman fuera del handler y se reutilizan entre invocaciones (`src/lambda.ts`) |
-| Pool chico | 2 conexiones por instancia, sin mínimo: cada instancia atiende una petición a la vez y RDS Proxy reparte. Las e2e pasan con 1 |
-| Sin contraseñas | Token IAM para RDS Proxy (`DB_IAM_AUTH`); el rol solo tiene `rds-db:connect` sobre la usuaria de la app |
-| Versiones y alias | `AutoPublishAlias: live`: API Gateway, Cognito y Scheduler apuntan al alias, y regresar es mover el alias |
-| Despliegue seguro | CodeDeploy con hook de migraciones y rollback automático por alarmas |
-| Logs | Una línea JSON por log (Nest), grupo con retención de 30 días. Formato `Text`: el filtro por nivel del formato `JSON` de Lambda no entiende los niveles de Nest |
+| Arranque en frío una vez | La app de Nest y el pool se arman fuera del handler y se reutilizan (`src/lambda.ts`) |
+| Pool chico | 2 conexiones por instancia, sin mínimo: RDS Proxy reparte. Las e2e pasan con 1 |
+| Sin contraseñas | IAM de punta a punta con RDS Proxy (`DB_IAM_AUTH`) |
+| Versiones y alias | API Gateway, Cognito y el Scheduler apuntan a `live`; regresar es mover el alias |
+| Despliegue seguro | Migraciones con la versión nueva antes de moverle el tráfico; smoke test con regreso automático |
+| Logs | Una línea JSON por log (Nest), grupo con retención de 30 días |
 | Trazas | X-Ray activo; source maps con `NODE_OPTIONS=--enable-source-maps` |
-| Concurrencia | `ReservedConcurrency` (parámetro) pone un tope para proteger la base. Por omisión no reserva, porque las cuentas nuevas solo tienen 10 en total |
+| Concurrencia | `reserved_concurrency` pone un tope para proteger la base (por omisión no reserva) |
 | Sin URL pública propia | Sin Function URL: solo se entra por API Gateway |
 
 ### API Gateway (HTTP API)
 
 | Práctica | Cómo |
 |---|---|
-| Autenticación en la orilla | Autorizador JWT de Cognito por omisión (issuer y audiencias = app clients) |
-| Rutas internas | `/api/v1/internal/*` con IAM; la Lambda además revisa que quien firma sea `AiWrapperRoleArn` |
-| CORS sin invocar la Lambda | Un método por ruta (no `ANY`), así API Gateway contesta el preflight `OPTIONS` sin pasar por el autorizador. Orígenes, headers y `MaxAge` explícitos |
-| Throttling | 50 req/s sostenidas y ráfagas de 100 (parámetros) |
+| Autenticación en la orilla | Autorizador JWT de Cognito (issuer y audiencias = los app clients) |
+| Rutas internas | `/api/v1/internal/*` con IAM; la Lambda además revisa que quien firma sea `AI_WRAPPER_ROLE_ARN` |
+| CORS sin invocar la Lambda | Un método por ruta (no `ANY`): API Gateway contesta el preflight sin pasar por el autorizador |
+| Throttling | 50 req/s sostenidas y ráfagas de 100 |
 | Access logs | JSON con id, ruta, estado y latencias; sin correo ni claims |
 
-### RDS y RDS Proxy (`terraform/`)
+### Red (VPC)
 
 | Práctica | Cómo |
 |---|---|
-| Red privada | Sin acceso público. Security groups encadenados: Lambda → proxy → base; los CIDR solo para administrar |
-| TLS | El proxy exige TLS y la app verifica el certificado (los de RDS Proxy son de ACM, que Node ya reconoce) |
-| Mínimo privilegio | `mincome_app` es dueña de la base, no `rds_superuser`. El proxy lee su contraseña de Secrets Manager; nadie más |
-| Protección | `deletion_protection` y snapshot final por omisión; backups de 7 días; almacenamiento cifrado |
-| Logs | Exportados a CloudWatch con retención, en vez de grupos que crecen sin fin |
-| Alta disponibilidad | `database_multi_az` (apagado por costo; recomendado en producción) |
+| Sin salida a internet | Solo subredes privadas y la ruta local; sin NAT Gateway (sin costo fijo) |
+| Dos zonas | Las subredes en dos AZ: RDS lo pide y la Lambda aguanta que se caiga una |
+| SG por omisión cerrado | Sin reglas, para que nadie lo use por descuido |
+| Security groups encadenados | Lambda → proxy → base, por referencia y no por rangos de IP |
+| Flow logs | Solo el tráfico rechazado, 14 días |
+
+### RDS y RDS Proxy
+
+| Práctica | Cómo |
+|---|---|
+| Sin contraseñas que manejar | RDS guarda y rota la del usuario maestro en Secrets Manager; `mincome_app` entra con IAM de punta a punta |
+| Mínimo privilegio | `mincome_app` es dueña de la base, no `rds_superuser`; el maestro solo lo usa el bootstrap |
+| TLS | El proxy lo exige y la app verifica el certificado |
+| Protección | `deletion_protection`, snapshot final, backups de 7 días y almacenamiento cifrado |
+| Logs | Exportados a CloudWatch con retención |
+| Alta disponibilidad | `database_multi_az` (apagado por costo; recomendado con usuarios reales) |
 
 ### Cognito
 
 | Práctica | Cómo |
 |---|---|
-| Verificar el token una vez | Lo hace API Gateway. La Lambda vuelve a revisar, sin criptografía, issuer, app client y vencimiento (`src/auth/cognito-claims.ts`); sin autorizador responde 401 |
-| Trigger acotado | El permiso de invocación solo vale para este user pool (`SourceArn` y `SourceAccount`) |
-| No bloquear el alta | Si el trigger falla, lo registra y deja confirmar; `GET /me` crea al usuario después |
-
-### EventBridge Scheduler
-
-| Práctica | Cómo |
-|---|---|
-| Zona horaria explícita | `cron(15 0 * * ? *)` en `America/Mexico_City` |
-| Reintentos y DLQ | 2 reintentos en una hora; si fallan, el evento queda en SQS y suena `DailyJobFailedAlarm` |
-| Idempotente | Repetir el proceso no duplica movimientos (índice único por plantilla y fecha) |
+| Correo verificado (D12) | Código por correo; un cambio de correo no vale hasta verificarlo |
+| Contraseñas | La misma política que el front (8+, mayúscula, minúscula, número y símbolo) |
+| Clientes públicos | Sin secreto, solo SRP y refresh; `prevent_user_existence_errors` y revocación de tokens |
+| Protección | `deletion_protection` del pool |
+| Trigger acotado | El permiso de invocación solo vale para este pool |
 
 ### Secretos, IAM y CI/CD
 
 | Práctica | Cómo |
 |---|---|
-| Sin llaves de AWS en GitHub | OIDC con un rol que solo asume este repo desde `production` |
-| Acciones fijadas | Por commit, no por etiqueta (una etiqueta se puede mover) |
+| Sin llaves de AWS en GitHub | OIDC con roles que solo asume este repo desde su environment |
+| Estado de Terraform | S3 cifrado, versionado, solo TLS, sin acceso público y con lock (`use_lockfile`) |
+| Llave de idempotencia | Se genera con un valor efímero y se escribe write-only: no queda en el estado de `secrets` |
+| Acciones fijadas | Por commit, no por etiqueta |
 | Sin inyección en el shell | Las variables de GitHub pasan por `env:`, no dentro de `run:` |
-| Secretos | La llave de idempotencia viene de Secrets Manager. Se resuelve al desplegar y queda cifrada con KMS en la configuración de la Lambda |
-| Alarmas | Errores y throttles de la Lambda, 5xx del API y DLQ del proceso diario, a un tema SNS cifrado |
+| Alarmas | Errores y throttles de la Lambda, 5xx del API y la DLQ del proceso diario, a un tema SNS cifrado |
+
+## Operación
+
+- **Rotar la llave de idempotencia**: `aws secretsmanager put-secret-value --secret-id mincome/production/backend/idempotency-keys --secret-string "<nueva>,<anterior>"` y **Backend** → `deploy`. Pasadas 24 horas, quita la anterior igual. Terraform no la vuelve a escribir.
+- **Destruir RDS o Cognito**: pon `DELETION_PROTECTION=false`, corre **Infra** → `apply` y luego `destroy`. Con la protección prendida, `destroy` falla a propósito.
+- **Entrar a la base en una emergencia**: agrega tu red a `admin_cidr_blocks` del componente `database` (necesitas una VPN a la VPC) y usa la contraseña del secreto `rds!…`.
 
 ## Pendiente o a decidir
 
-- **Secretos en tiempo de ejecución.** Leer la llave de idempotencia desde Secrets Manager al arrancar, en vez de ponerla en la configuración, necesita un VPC endpoint de Secrets Manager (unos US$7 al mes por zona).
-- **NestJS Observe** no puede reportar desde la VPC sin salida a internet. Está apagado mientras no haya `OBSERVE_APP_KEY` y `OBSERVE_APP_SECRET`.
-- **Dominio propio** para el API (`api.mincome.mx`) con un certificado de ACM. Después se puede apagar el endpoint `execute-api`.
-- **Estado de Terraform** en S3 cifrado con bloqueo (ver `terraform/README.md`).
-- **Despliegue gradual** (`Canary10Percent5Minutes`) en vez de `AllAtOnce` cuando haya tráfico real.
+- **La llave de idempotencia queda en el estado de `backend`** (la Lambda la recibe como variable de entorno). Leerla en tiempo de ejecución necesita un VPC endpoint de Secrets Manager (unos US$7 al mes por zona).
+- **NestJS Observe** no puede reportar desde la VPC sin salida a internet.
+- **Correo de Cognito**: el remitente por omisión manda hasta 50 correos al día; con usuarios reales, SES.
+- **Dominio propio** para el API con un certificado de ACM.
+- **Proveedores de Terraform en otras plataformas**: los `.terraform.lock.hcl` traen los hashes de Linux. En Windows o macOS, `terraform providers lock -platform=…` antes de commitear.

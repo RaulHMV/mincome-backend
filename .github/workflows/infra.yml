@@ -1,0 +1,147 @@
+name: Infra
+
+# Terraform de la red, la base, los secretos y Cognito, con el rol
+# mincome-backend-infra. Un componente o todos, en orden (al destruir, al revés).
+on:
+  workflow_dispatch:
+    inputs:
+      component:
+        description: Componente
+        type: choice
+        options: [all, network, database, secrets, auth]
+        default: all
+      action:
+        description: plan no cambia nada; apply y destroy piden la palabra de seguridad
+        type: choice
+        options: [plan, apply, destroy]
+        default: plan
+      confirm:
+        description: Escribe "deploy" para apply o "destroy" para destroy
+        type: string
+        default: ""
+  workflow_call:
+    inputs:
+      component:
+        type: string
+        required: true
+      action:
+        type: string
+        required: true
+      confirm:
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+  # OIDC: GitHub entrega un token de corta duración y AWS lo cambia por el rol.
+  id-token: write
+
+concurrency:
+  group: terraform-production
+  cancel-in-progress: false
+
+jobs:
+  terraform:
+    name: ${{ inputs.action }} ${{ inputs.component }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    environment: production
+    env:
+      ENVIRONMENT: production
+      AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+      COMPONENT: ${{ inputs.component }}
+      ACTION: ${{ inputs.action }}
+      CONFIRM: ${{ inputs.confirm }}
+      # Las protecciones de borrado de RDS y Cognito: para destruirlos, primero
+      # un apply con DELETION_PROTECTION=false en el GitHub environment.
+      DELETION_PROTECTION: ${{ vars.DELETION_PROTECTION || 'true' }}
+    steps:
+      - name: Palabra de seguridad
+        run: |
+          case "$ACTION" in
+            plan) expected="" ;;
+            apply) expected="deploy" ;;
+            destroy) expected="destroy" ;;
+            *) echo "::error::Acción desconocida: $ACTION"; exit 1 ;;
+          esac
+          case "$COMPONENT" in
+            all|network|database|secrets|auth) ;;
+            *) echo "::error::Componente desconocido: $COMPONENT"; exit 1 ;;
+          esac
+          if [ -n "$expected" ] && [ "$CONFIRM" != "$expected" ]; then
+            echo "::error::Para $ACTION escribe exactamente: $expected"
+            exit 1
+          fi
+
+      # Acciones fijadas por commit: una etiqueta se puede mover.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.17.2
+          terraform_wrapper: false
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_INFRA_ROLE_ARN }}
+          role-session-name: mincome-infra-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Terraform
+        run: |
+          set -euo pipefail
+          account=$(aws sts get-caller-identity --query Account --output text)
+          state_bucket="mincome-tfstate-${account}-${AWS_REGION}"
+
+          if [ "$COMPONENT" = all ]; then
+            components="network database secrets auth"
+            [ "$ACTION" = destroy ] && components="auth secrets database network"
+          else
+            components="$COMPONENT"
+          fi
+
+          for component in $components; do
+            echo "::group::$ACTION $component"
+            dir="terraform/$component"
+            terraform -chdir="$dir" init -input=false \
+              -backend-config="bucket=$state_bucket" \
+              -backend-config="key=$ENVIRONMENT/$component.tfstate" \
+              -backend-config="region=$AWS_REGION"
+
+            args=(-input=false -lock-timeout=5m -var "environment=$ENVIRONMENT" -var "aws_region=$AWS_REGION")
+            case "$component" in
+              database) args+=(-var "deletion_protection=$DELETION_PROTECTION") ;;
+              auth)
+                args+=(-var "deletion_protection=$DELETION_PROTECTION")
+                # El trigger de Cognito, si la Lambda ya existe.
+                alias_arn=$(aws lambda get-alias --function-name mincome-backend --name live \
+                  --query AliasArn --output text 2>/dev/null || true)
+                args+=(-var "post_confirmation_lambda_arn=${alias_arn}")
+                ;;
+            esac
+
+            case "$ACTION" in
+              plan) terraform -chdir="$dir" plan "${args[@]}" ;;
+              apply)
+                terraform -chdir="$dir" plan "${args[@]}" -out=tfplan
+                terraform -chdir="$dir" apply -input=false tfplan
+                ;;
+              destroy) terraform -chdir="$dir" destroy "${args[@]}" -auto-approve ;;
+            esac
+            echo "::endgroup::"
+          done
+
+      - name: Resumen
+        if: inputs.action == 'apply'
+        run: |
+          {
+            echo "### Infra: $COMPONENT"
+            for component in network database secrets auth; do
+              if [ "$COMPONENT" = all ] || [ "$COMPONENT" = "$component" ]; then
+                echo "**$component**"
+                echo '```'
+                terraform -chdir="terraform/$component" output 2>/dev/null || true
+                echo '```'
+              fi
+            done
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -16,10 +16,12 @@ import {
 import { isJobEvent, runJob } from './lambda/jobs';
 
 /**
- * La Lambda de mincome-backend (handler `dist/lambda.handler`). Atiende:
+ * La Lambda de mincome-backend (handler `lambda.handler` del paquete de
+ * dist-lambda; terraform/backend). Atiende:
  * - API Gateway HTTP API (payload 2.0): la API REST completa.
  * - El trigger Post confirmation de Cognito.
- * - `{"job": "daily"}` de EventBridge Scheduler y `{"job": "migrate"}` del despliegue.
+ * - `{"job": "daily"}` de EventBridge Scheduler, y `{"job": "migrate"}` y
+ *   `{"job": "bootstrap"}` del despliegue (src/lambda/jobs.ts).
  *
  * La app de Nest se arma una vez por instancia, en el arranque en frío, y se
  * reutiliza en las invocaciones siguientes junto con su pool de conexiones.

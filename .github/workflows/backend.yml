@@ -1,0 +1,200 @@
+name: Backend
+
+# La app (componente backend de Terraform) con el rol mincome-backend-ci.
+#
+# deploy: construye el paquete, lo sube, publica una versión nueva de la Lambda
+# sin moverle el tráfico, crea al usuario de la base, corre las migraciones con
+# la versión nueva y solo entonces mueve el alias live. Si el smoke test falla,
+# regresa live a la versión anterior.
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: plan no cambia nada; las demás piden su palabra de seguridad
+        type: choice
+        options: [plan, deploy, migrate, rollback, destroy]
+        default: plan
+      confirm:
+        description: Escribe la acción (deploy, migrate, rollback o destroy)
+        type: string
+        default: ""
+      version:
+        description: Solo para rollback, la versión de la Lambda a la que regresa live
+        type: string
+        default: ""
+  workflow_call:
+    inputs:
+      action:
+        type: string
+        required: true
+      confirm:
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: backend-production
+  cancel-in-progress: false
+
+jobs:
+  backend:
+    name: ${{ inputs.action }} backend
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: production
+    env:
+      ENVIRONMENT: production
+      AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+      ACTION: ${{ inputs.action }}
+      CONFIRM: ${{ inputs.confirm }}
+      ROLLBACK_VERSION: ${{ inputs.version }}
+      FUNCTION: mincome-backend
+      # Variables del GitHub environment; van por env y no dentro de run:
+      # para que no se interpreten como shell.
+      TF_VAR_environment: production
+      TF_VAR_web_app_origin: ${{ vars.WEB_APP_ORIGIN }}
+      TF_VAR_ai_wrapper_role_arn: ${{ vars.AI_WRAPPER_ROLE_ARN }}
+      TF_VAR_alarm_email: ${{ vars.ALARM_EMAIL }}
+    steps:
+      - name: Palabra de seguridad
+        run: |
+          case "$ACTION" in
+            plan) expected="" ;;
+            deploy|migrate|rollback|destroy) expected="$ACTION" ;;
+            *) echo "::error::Acción desconocida: $ACTION"; exit 1 ;;
+          esac
+          if [ -n "$expected" ] && [ "$CONFIRM" != "$expected" ]; then
+            echo "::error::Para $ACTION escribe exactamente: $expected"
+            exit 1
+          fi
+          if [ "$ACTION" = rollback ] && ! [[ "$ROLLBACK_VERSION" =~ ^[0-9]+$ ]]; then
+            echo "::error::rollback pide el número de versión"
+            exit 1
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
+          role-session-name: mincome-backend-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Buckets
+        run: |
+          account=$(aws sts get-caller-identity --query Account --output text)
+          echo "STATE_BUCKET=mincome-tfstate-${account}-${AWS_REGION}" >> "$GITHUB_ENV"
+          echo "ARTIFACTS_BUCKET=mincome-backend-artifacts-${account}-${AWS_REGION}" >> "$GITHUB_ENV"
+
+      # ------------------------------------------------ paquete de la Lambda
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: inputs.action == 'plan' || inputs.action == 'deploy'
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Construir el paquete
+        if: inputs.action == 'plan' || inputs.action == 'deploy'
+        run: |
+          npm ci
+          npm run build:lambda
+          (cd dist-lambda && zip -q -9 -r "$RUNNER_TEMP/backend.zip" .)
+          echo "TF_VAR_package_s3_key=backend/${GITHUB_SHA}.zip" >> "$GITHUB_ENV"
+          echo "TF_VAR_package_sha256=$(openssl dgst -sha256 -binary "$RUNNER_TEMP/backend.zip" | base64)" >> "$GITHUB_ENV"
+          ls -la "$RUNNER_TEMP/backend.zip"
+      - name: Subir el paquete
+        if: inputs.action == 'deploy'
+        run: aws s3 cp "$RUNNER_TEMP/backend.zip" "s3://$ARTIFACTS_BUCKET/backend/${GITHUB_SHA}.zip" --only-show-errors
+
+      # destroy no construye: usa el paquete que está desplegado.
+      - name: Paquete desplegado
+        if: inputs.action == 'destroy'
+        run: |
+          package=$(aws ssm get-parameter --name "/mincome/$ENVIRONMENT/backend/package" \
+            --query Parameter.Value --output text)
+          echo "TF_VAR_package_s3_key=$(jq -r .key <<<"$package")" >> "$GITHUB_ENV"
+          echo "TF_VAR_package_sha256=$(jq -r .sha256 <<<"$package")" >> "$GITHUB_ENV"
+
+      # ------------------------------------------------------------ Terraform
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        if: inputs.action == 'plan' || inputs.action == 'deploy' || inputs.action == 'destroy'
+        with:
+          terraform_version: 1.17.2
+          terraform_wrapper: false
+      - name: terraform init
+        if: inputs.action == 'plan' || inputs.action == 'deploy' || inputs.action == 'destroy'
+        run: |
+          terraform -chdir=terraform/backend init -input=false \
+            -backend-config="bucket=$STATE_BUCKET" \
+            -backend-config="key=$ENVIRONMENT/backend.tfstate" \
+            -backend-config="region=$AWS_REGION"
+          echo "TF_VAR_aws_region=$AWS_REGION" >> "$GITHUB_ENV"
+
+      - name: terraform plan
+        if: inputs.action == 'plan'
+        run: terraform -chdir=terraform/backend plan -input=false -lock-timeout=5m
+
+      - name: terraform destroy
+        if: inputs.action == 'destroy'
+        run: terraform -chdir=terraform/backend destroy -input=false -lock-timeout=5m -auto-approve
+
+      - name: Versión que atiende hoy
+        if: inputs.action == 'deploy'
+        run: |
+          previous=$(aws lambda get-alias --function-name "$FUNCTION" --name live \
+            --query FunctionVersion --output text 2>/dev/null || true)
+          echo "PREVIOUS_VERSION=${previous}" >> "$GITHUB_ENV"
+          echo "live atiende con la versión: ${previous:-ninguna (primer despliegue)}"
+
+      - name: terraform apply (publica la versión sin moverle el tráfico)
+        if: inputs.action == 'deploy'
+        run: |
+          terraform -chdir=terraform/backend plan -input=false -lock-timeout=5m -out=tfplan
+          terraform -chdir=terraform/backend apply -input=false tfplan
+          echo "NEW_VERSION=$(terraform -chdir=terraform/backend output -raw published_version)" >> "$GITHUB_ENV"
+          echo "API_URL=$(terraform -chdir=terraform/backend output -raw api_url)" >> "$GITHUB_ENV"
+
+      # ------------------------------------------------------ jobs y tráfico
+      - name: Usuario de la base (bootstrap)
+        if: inputs.action == 'deploy'
+        run: ./scripts/invoke-job.sh "$FUNCTION-db-bootstrap" bootstrap
+
+      - name: Migraciones con la versión nueva
+        if: inputs.action == 'deploy'
+        run: ./scripts/invoke-job.sh "$FUNCTION:$NEW_VERSION" migrate
+
+      - name: Mover live a la versión nueva
+        if: inputs.action == 'deploy'
+        run: |
+          aws lambda update-alias --function-name "$FUNCTION" --name live \
+            --function-version "$NEW_VERSION" --query FunctionVersion --output text
+
+      - name: Smoke test (si falla, live regresa a la versión anterior)
+        if: inputs.action == 'deploy'
+        run: |
+          if curl --fail --silent --show-error --retry 5 --retry-all-errors --retry-delay 3 "$API_URL/health"; then
+            echo
+            echo "### Backend desplegado: versión $NEW_VERSION" >> "$GITHUB_STEP_SUMMARY"
+            echo "API: $API_URL" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if [ -n "$PREVIOUS_VERSION" ] && [ "$PREVIOUS_VERSION" != "$NEW_VERSION" ]; then
+            echo "::error::El smoke test falló; live regresa a la versión $PREVIOUS_VERSION"
+            aws lambda update-alias --function-name "$FUNCTION" --name live \
+              --function-version "$PREVIOUS_VERSION" --query FunctionVersion --output text
+          fi
+          exit 1
+
+      - name: Migraciones con la versión que atiende
+        if: inputs.action == 'migrate'
+        run: ./scripts/invoke-job.sh "$FUNCTION:live" migrate
+
+      - name: Regresar live a otra versión
+        if: inputs.action == 'rollback'
+        run: |
+          aws lambda update-alias --function-name "$FUNCTION" --name live \
+            --function-version "$ROLLBACK_VERSION" --query FunctionVersion --output text
+          echo "### live regresó a la versión $ROLLBACK_VERSION" >> "$GITHUB_STEP_SUMMARY"

@@ -3,7 +3,7 @@
 // tree-shaking deja fuera.
 //
 //   npm run build:lambda                # deja el paquete en dist-lambda/
-//   node scripts/bundle-lambda.mjs DIR  # lo que corre `sam build` (Makefile)
+//   node scripts/bundle-lambda.mjs DIR  # en otra carpeta
 //
 // Se empaqueta la salida de `nest build` (dist/), no los .ts: esbuild no emite
 // la metadata de los decoradores (emitDecoratorMetadata) que la inyección de
