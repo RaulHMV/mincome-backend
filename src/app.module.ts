@@ -14,6 +14,7 @@ import { ApiExceptionFilter } from './common/errors/api-exception.filter';
 import { validationExceptionFactory } from './common/validation/validation-exception.factory';
 import { AppConfigModule } from './config/app-config.module';
 import { DashboardModule } from './dashboard/dashboard.module';
+import { ConversationsModule } from './conversations/conversations.module';
 import { createDatabaseConfig } from './database.config';
 import { HealthModule } from './health/health.module';
 import { IdempotencyKeysModule } from './idempotency/idempotency-keys.module';
@@ -65,6 +66,7 @@ export const { ObserveModule, ObserveInstrument } = createObserveModule();
     CalendarModule,
     DashboardModule,
     AlertsModule,
+    ConversationsModule,
   ],
   providers: [
     {
