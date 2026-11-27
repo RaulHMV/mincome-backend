@@ -4,6 +4,7 @@ import { APP_FILTER, APP_PIPE } from '@nestjs/core';
 import { createObserveModule } from '@nestjs/observe';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AccountsModule } from './accounts/accounts.module';
+import { AlertsModule } from './alerts/alerts.module';
 import { AuthModule } from './auth/auth.module';
 import { BudgetsModule } from './budgets/budgets.module';
 import { CalendarModule } from './calendar/calendar.module';
@@ -63,6 +64,7 @@ export const { ObserveModule, ObserveInstrument } = createObserveModule();
     MovementsModule,
     CalendarModule,
     DashboardModule,
+    AlertsModule,
   ],
   providers: [
     {
